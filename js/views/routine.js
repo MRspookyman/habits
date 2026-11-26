@@ -1,4 +1,5 @@
-import { h, sheet, confirmSheet, toast, num, fmt, field, dec } from "../ui.js";
+import { h, sheet, confirmSheet, toast, num, fmt, field, dec, pageHead, actionButton } from "../ui.js";
+import { icon } from "../icons.js";
 import { state, save, uid, dateKey, exerciseInfo, setExerciseInfo, knownExerciseNames } from "../store.js";
 import { stalledExercises, lastPerformance, bestMarks, setPR, isWorkSet, plateBreakdown, sessionMinutes, sessionVolume, sessionPRs, suggestSets } from "../logic.js";
 import { GROUPS, groupName } from "../exercises.js";
@@ -11,29 +12,35 @@ const groupSelect = (value, onChange) =>
     h("option", { value: "", selected: !value }, "Sin grupo"),
     GROUPS.map((g) => h("option", { value: g.id, selected: g.id === value }, g.name)));
 const volumeText = (v) => (v >= 1000 ? `${fmt(v / 1000, 1)} t` : `${Math.round(v)} kg`);
-const openSession = () => state.sessions.find((s) => !s.finishedAt && s.date === dateKey());
+const isLiveSession = (s) => !s.finishedAt && (s.startedAt != null || s.date === dateKey());
+const openSession = () => state.sessions.findLast(isLiveSession);
+let historyLimit = 10;
 
 export function renderRoutine(ctx) {
   const stalled = stalledExercises(state.sessions);
-  const sessions = state.sessions.filter((s) => s.finishedAt || s.date < dateKey()).sort((a, b) => b.date.localeCompare(a.date) || (b.startedAt || 0) - (a.startedAt || 0));
   const live = openSession();
+  const sessions = state.sessions.filter((s) => s.id !== live?.id).sort((a, b) => b.date.localeCompare(a.date) || (b.startedAt || 0) - (a.startedAt || 0));
 
   return h("frag", {},
-    h("header", { class: "page-head" }, h("h1", {}, "Gimnasio")),
-    live && h("a", { class: "live-banner", href: `#/entreno/${live.id}` },
-      h("span", {}, h("strong", {}, live.name), " en curso"),
-      h("span", { class: "live-time", "data-since": live.startedAt || Date.now() }),
-      h("span", { class: "btn primary small" }, "Continuar")),
+    pageHead("Entrenamiento", sessions.length ? "Última sesión · " + shortDate(sessions[0].date) : null, actionButton("Nueva plantilla", "plus", () => editTemplate(ctx, null))),
+    h("section", { class: "training-feature" },
+      h("div", { class: "training-copy" }, h("span", { class: "feature-icon" }, icon("gym", 23)),
+        h("h2", {}, live ? live.name : "Sesión libre"),
+        h("p", {}, live ? h("frag", {}, "Sesión en curso · ", h("span", { class: "live-time", "data-since": live.startedAt || Date.now() })) : "Empieza a entrenar y añade tus ejercicios sobre la marcha."),
+        live ? h("a", { class: "btn primary", href: "#/entreno/" + live.id }, icon("play", 15), "Continuar sesión")
+          : actionButton("Empezar sesión", "play", () => startSession(ctx)))),
     stalled.length > 0 && h("div", { class: "alert warn" },
       h("p", {}, h("strong", {}, "Estancado: "), stalled.join(", "), ". Llevas 3 sesiones sin superar tu mejor marca: revisa sueño y calorías, o cambia series y repeticiones."),
     ),
-    h("section", { class: "stack" },
-      state.templates.length === 0 && h("div", { class: "empty" },
-        h("p", {}, "Crea tu primera plantilla, por ejemplo «Día A» con sus ejercicios. Al entrenar eliges la plantilla y solo ajustas los pesos."),
-      ),
+    h("div", { class: "training-columns" }, h("section", { class: "stack" },
+      h("div", { class: "list-heading" }, h("h2", {}, "Mis plantillas"), h("span", { class: "count" }, String(state.templates.length))),
+      state.templates.length === 0 && h("div", { class: "card empty-state" },
+        h("span", { class: "tile tone-sage" }, icon("layers", 23)), h("h3", {}, "Prepara una rutina"),
+        h("p", {}, "Guarda tus ejercicios y series en una plantilla para repetirlos en otra sesión."),
+        actionButton("Crear plantilla", "plus", () => editTemplate(ctx, null), "ghost")),
       state.templates.map((t) => h("article", { class: "card template" },
         h("div", { class: "template-head" },
-          h("h2", {}, t.name),
+          h("h3", {}, t.name),
           h("button", { class: "btn ghost small", onClick: () => editTemplate(ctx, t) }, "Editar"),
         ),
         h("ul", { class: "tpl-list" }, t.exercises.map((e, i) => h("li", { class: e.superset && t.exercises[i + 1] ? "ss" : "" },
@@ -41,18 +48,19 @@ export function renderRoutine(ctx) {
           h("span", { class: "muted" }, `${e.sets} × ${e.reps}`)))),
         h("button", { class: "btn primary block", disabled: !t.exercises.length || Boolean(live), onClick: () => startSession(ctx, t) }, live ? "Termina el entreno en curso primero" : "Empezar entreno"),
       )),
-      h("button", { class: "btn ghost block", onClick: () => editTemplate(ctx, null) }, "Nueva plantilla"),
     ),
-    sessions.length > 0 && h("section", { class: "card" },
-      h("h2", {}, "Historial"),
-      h("ul", { class: "history" }, sessions.slice(0, 30).map((s) => {
+    h("section", { class: "stack" }, h("h2", {}, "Historial"),
+      sessions.length === 0 ? h("div", { class: "card empty-state" }, h("span", { class: "tile tone-sand" }, icon("clock", 23)),
+        h("h3", {}, "Tu primera sesión"), h("p", {}, "Aquí podrás consultar los ejercicios, la duración y los récords de cada entrenamiento."))
+        : h("ul", { class: "history card" }, sessions.slice(0, historyLimit).map((s) => {
         const prs = sessionPRs(state.sessions, s).length;
         return h("li", {}, h("a", { class: "link-row", href: `#/entreno/${s.id}` },
           h("span", { class: "hist-main" }, h("strong", {}, s.name), h("span", { class: "muted" }, shortDate(s.date))),
           h("span", { class: "hist-meta" }, `${minutesText(sessionMinutes(s))} · ${volumeText(sessionVolume(s))}`, prs > 0 && h("span", { class: "pr-badge" }, `${prs} PR`)),
         ));
       })),
-    ),
+      sessions.length > historyLimit && h("button", { class: "btn ghost", onClick: () => { historyLimit += 10; ctx.rerender(); } }, "Ver más sesiones"),
+    )),
   );
 }
 
@@ -67,13 +75,13 @@ function editTemplate(ctx, existing) {
         e.group ??= info.group;
         const grp = groupSelect(e.group, (g) => (e.group = g));
         return h("li", {},
-          h("input", { type: "text", value: e.name, list: "exercise-names", placeholder: "Ejercicio", "aria-label": "Ejercicio", class: "ex-name", onChange: (ev) => {
+          h("input", { type: "text", value: e.name, list: "exercise-names", placeholder: "Ejercicio", "aria-label": "Ejercicio", class: "ex-name", onInput: (ev) => {
             e.name = ev.target.value;
             e.group = exerciseInfo(e.name).group;
-            draw();
+            grp.value = e.group || "";
           } }),
-          h("input", { type: "number", inputmode: "numeric", min: 1, max: 10, value: e.sets, class: "narrow", "aria-label": "Series", onInput: (ev) => (e.sets = Math.max(1, Math.min(10, Number(ev.target.value) || 1))) }),
-          h("input", { type: "text", value: e.reps, class: "narrow", placeholder: "8-10", "aria-label": "Repeticiones objetivo", onInput: (ev) => (e.reps = ev.target.value) }),
+          h("label", { class: "ex-field" }, h("span", {}, "Series"), h("input", { type: "number", inputmode: "numeric", min: 1, max: 10, value: e.sets, class: "narrow", onInput: (ev) => (e.sets = Math.max(1, Math.min(10, Number(ev.target.value) || 1))) })),
+          h("label", { class: "ex-field" }, h("span", {}, "Repeticiones objetivo"), h("input", { type: "text", value: e.reps, class: "narrow", placeholder: "8-10", onInput: (ev) => (e.reps = ev.target.value) })),
           h("div", { class: "ex-tools" },
             h("button", { type: "button", class: "icon-btn", "aria-label": "Subir", disabled: i === 0, onClick: () => { [t.exercises[i - 1], t.exercises[i]] = [t.exercises[i], t.exercises[i - 1]]; draw(); } }, "↑"),
             h("button", { type: "button", class: "icon-btn", "aria-label": "Quitar", onClick: () => { t.exercises.splice(i, 1); draw(); } }, "✕"),
@@ -135,16 +143,18 @@ function prefilled(name, count, before, target) {
   return { sets, suggest: sug && sug.kind !== "same" ? sug.kind : null };
 }
 
-function startSession(ctx, t) {
+function startSession(ctx, t = null) {
+  const live = openSession();
+  if (live) return ctx.go("#/entreno/" + live.id);
   const today = dateKey();
   const s = {
     id: uid(),
     date: today,
-    templateId: t.id,
-    name: t.name,
+    templateId: t?.id || null,
+    name: t?.name || "Sesión libre",
     startedAt: Date.now(),
     finishedAt: null,
-    exercises: t.exercises.map((e) => ({ name: e.name, target: e.reps, superset: Boolean(e.superset), ...prefilled(e.name, e.sets, today, e.reps) })),
+    exercises: (t?.exercises || []).map((e) => ({ name: e.name, target: e.reps, superset: Boolean(e.superset), ...prefilled(e.name, e.sets, today, e.reps) })),
   };
   state.sessions.push(s);
   save();
@@ -191,11 +201,33 @@ function exerciseSettings(name, onSave) {
 
 let active = null; // { id, ei, si }
 
+function sessionRecord(s) {
+  const sets = s.exercises.flatMap((e) => e.sets).filter(isWorkSet);
+  const exercises = s.exercises.map((e) => {
+    const rows = e.sets.map((set, i) => h("li", {},
+      h("span", { class: "muted" }, set.warmup ? "Calentamiento" : "Serie " + (i + 1)),
+      h("strong", {}, set.done ? setLabel(set) : "Sin completar"),
+      set.done && set.rir !== "" && set.rir != null && h("small", {}, `RIR ${set.rir}`)));
+    return h("article", { class: "card" }, h("h2", {}, e.name), h("ol", { class: "logged-sets" }, rows));
+  });
+  return h("frag", {},
+    pageHead(s.name, shortDate(s.date), h("a", { class: "btn ghost", href: "#/entreno/" + s.id + "/editar" }, icon("edit", 16), "Editar sesión"),
+      h("a", { class: "back-link", href: "#/rutina" }, icon("back", 15), "Entrenamiento")),
+    h("section", { class: "card" }, h("h2", {}, "Sesión terminada"), h("dl", { class: "stats stats-3" },
+      [["Duración", minutesText(sessionMinutes(s))], ["Volumen", volumeText(sessionVolume(s))], ["Series efectivas", String(sets.length)]]
+        .map(([label, v]) => h("div", {}, h("dt", {}, label), h("dd", {}, v))))),
+    h("div", { class: "report-grid" }, exercises),
+  );
+}
+
 export function renderSession(ctx) {
   const s = state.sessions.find((x) => x.id === ctx.params.id);
-  if (!s) return h("div", { class: "empty" }, h("p", {}, "Este entreno ya no existe."), h("a", { class: "btn", href: "#/rutina" }, "Volver al gimnasio"));
-  const live = !s.finishedAt;
+  if (!s) return h("frag", {}, pageHead("Entrenamiento"), h("section", { class: "card empty-state" },
+    h("span", { class: "tile tone-sage" }, icon("gym")), h("h2", {}, "Sesión no disponible"),
+    h("p", {}, "Este entrenamiento ya no está en tu diario."), h("a", { class: "btn ghost", href: "#/rutina" }, "Ver entrenamientos")));
+  const live = isLiveSession(s);
   timer.keepAwake(live);
+  if (!live && !ctx.params.edit) return sessionRecord(s);
 
   const firstPending = () => {
     for (let ei = 0; ei < s.exercises.length; ei++) {
@@ -206,10 +238,45 @@ export function renderSession(ctx) {
   };
   if (!active || active.id !== s.id || !s.exercises[active.ei]?.sets[active.si]) active = live ? firstPending() : null;
 
-  const wrap = h("div", { class: "stack" });
+  const wrap = h("div", { class: "stack exercise-stack" });
+  const status = h("strong", { "aria-live": "polite" });
+  const fill = h("i");
+  const finishButton = actionButton("Terminar sesión", "check", () => {
+    const pending = s.exercises.some((e) => e.sets.some((x) => !x.done));
+    if (pending) confirmSheet("Terminar sesión", "Se guardarán las series completadas. Las pendientes se retirarán de esta sesión.", "Terminar sesión", finish, false);
+    else finish();
+  });
+  const dockName = h("strong");
+  const dockDetail = h("small");
+  const dockAction = h("button", { class: "btn primary" });
+  const nextSet = () => {
+    const set = active && s.exercises[active.ei]?.sets[active.si];
+    return set && !set.done ? active : firstPending();
+  };
+  const updateDock = () => {
+    if (!live) return;
+    const next = nextSet();
+    const exercise = next && s.exercises[next.ei];
+    const logged = s.exercises.some((e) => e.sets.some((x) => x.done));
+    dockName.textContent = exercise?.name || (logged ? "Series completadas" : "Sesión en curso");
+    dockDetail.textContent = next ? `Serie ${next.si + 1} de ${exercise.sets.length}` : logged ? "Guarda tu entrenamiento" : "Añade un ejercicio para empezar";
+    dockAction.textContent = next ? Number(exercise.sets[next.si].reps) > 0 ? "Serie hecha" : "Anotar reps" : logged ? "Terminar sesión" : "Añadir ejercicio";
+  };
+  dockAction.addEventListener("click", () => {
+    const next = nextSet();
+    if (!next) {
+      if (!finishButton.disabled) finishButton.click();
+      else addName.focus();
+      return;
+    }
+    active = next;
+    draw();
+    if (Number(s.exercises[next.ei].sets[next.si].reps) > 0) wrap.querySelector(".set-row.active .set-check").click();
+    else wrap.querySelector('.set-panel input[aria-label="Reps"]')?.focus();
+  });
 
   const stepper = (label, value, step, onSet, onPlates) => {
-    const input = h("input", { type: "text", inputmode: "decimal", value: dec(value), "aria-label": label, onChange: (e) => onSet(e.target.value) });
+    const input = h("input", { type: "text", inputmode: label === "Reps" ? "numeric" : "decimal", value: dec(value), placeholder: label === "Reps" ? "—" : "0", "aria-label": label, onInput: (e) => onSet(e.target.value) });
     const bump = (d) => () => {
       const v = Math.max(0, Math.round(((num(input.value) || 0) + d) * 100) / 100);
       input.value = dec(v);
@@ -227,6 +294,12 @@ export function renderSession(ctx) {
   };
 
   const draw = () => {
+    const sets = s.exercises.flatMap((e) => e.sets);
+    const done = sets.filter((x) => x.done).length;
+    status.textContent = `${done} de ${sets.length} series hechas`;
+    fill.style.width = (sets.length ? done / sets.length * 100 : 0) + "%";
+    finishButton.disabled = done === 0;
+    updateDock();
     const marksCache = new Map();
     wrap.replaceChildren(...s.exercises.map((e, ei) => {
       const info = exerciseInfo(e.name);
@@ -255,7 +328,6 @@ export function renderSession(ctx) {
             class: "set-check" + (x.done ? " on" : ""),
             "aria-pressed": String(Boolean(x.done)),
             "aria-label": x.done ? `Desmarcar serie ${badge}` : `Marcar serie ${badge} como hecha`,
-            disabled: !live && !x.done,
             onClick: () => {
               if (!x.done && !(Number(x.reps) > 0)) return toast("Pon las repeticiones antes de marcarla", "error");
               x.done = !x.done;
@@ -287,7 +359,7 @@ export function renderSession(ctx) {
         const panel = h("div", { class: "set-panel" },
           h("div", { class: "steppers" },
             stepper("kg", x.kg, info.step || 2.5, (v) => { x.kg = v.replace(",", "."); save(); row.querySelector(".set-kg").textContent = x.kg !== "" ? dec(x.kg) : "—"; }, (v) => plateSheet(v)),
-            stepper("Reps", x.reps, 1, (v) => { x.reps = String(Math.round(num(v) || 0)); save(); row.querySelector(".set-reps").textContent = x.reps; }),
+            stepper("Reps", x.reps, 1, (v) => { x.reps = String(Math.round(num(v) || 0)); save(); row.querySelector(".set-reps").textContent = x.reps; updateDock(); }),
           ),
           h("div", { class: "rir", role: "group", "aria-label": "Repeticiones en reserva (RIR)" },
             h("span", { class: "stepper-label" }, "RIR"),
@@ -299,7 +371,7 @@ export function renderSession(ctx) {
           ),
           h("div", { class: "row" },
             h("button", { class: "btn ghost small", onClick: () => { e.sets.splice(si, 1); active = null; save(); draw(); } }, "Quitar serie"),
-            h("button", { class: "btn primary grow", disabled: !live, onClick: () => row.querySelector(".set-check").click() }, x.done ? "Desmarcar" : "Serie hecha ✓"),
+            h("button", { class: "btn primary grow", onClick: () => row.querySelector(".set-check").click() }, x.done ? "Desmarcar" : "Serie hecha ✓"),
           ),
         );
         return h("frag", {}, row, panel);
@@ -316,7 +388,7 @@ export function renderSession(ctx) {
             live && suggestText && h("p", { class: "ex-suggest" }, suggestText),
             info.note && h("p", { class: "ex-note" }, info.note),
           ),
-          h("button", { class: "icon-btn", "aria-label": `Ajustes de ${e.name}`, onClick: () => exerciseSettings(e.name, draw) }, "⚙"),
+          h("button", { class: "icon-btn", "aria-label": `Ajustes de ${e.name}`, onClick: () => exerciseSettings(e.name, ctx.rerender) }, icon("settings", 18)),
         ),
         h("div", { class: "set-head", "aria-hidden": "true" }, h("span", {}, "Serie"), h("span", {}, "Anterior"), h("span", {}, "kg × reps"), h("span", {}, "✓")),
         rows,
@@ -335,7 +407,7 @@ export function renderSession(ctx) {
   };
   draw();
 
-  const addName = h("input", { type: "text", list: "exercise-names", placeholder: "Añadir ejercicio", "aria-label": "Nombre del ejercicio" });
+  const addName = h("input", { id: "add-exercise", type: "text", list: "exercise-names", required: true, placeholder: "Busca o escribe un ejercicio" });
 
   const finish = () => {
     for (const e of s.exercises) e.sets = e.sets.filter((x) => x.done);
@@ -361,19 +433,20 @@ export function renderSession(ctx) {
       ),
       prs.length
         ? h("ul", { class: "pr-list" }, prs.map((p) => h("li", {}, h("span", { class: "pr-badge" }, "PR"), ` ${p.name}: ${setLabel(p.set)}`, h("span", { class: "muted" }, p.kind === "kg" ? " · más peso" : " · mejor 1RM estimado"))))
-        : h("p", { class: "muted" }, "Sin récords hoy. La constancia también suma."),
+        : null,
       h("div", { class: "row end" }, h("button", { class: "btn primary", onClick: close }, "Hecho")),
     ));
   };
 
   return h("frag", {},
-    h("header", { class: "page-head" },
-      h("a", { class: "icon-btn", href: "#/rutina", "aria-label": "Volver" }, "‹"),
-      h("div", {}, h("h1", {}, s.name), h("p", { class: "muted" }, shortDate(s.date), live && " · ", live && h("span", { class: "live-time", "data-since": s.startedAt || Date.now() }))),
-    ),
+    pageHead(s.name, shortDate(s.date), live ? finishButton : h("a", { class: "btn primary", href: "#/entreno/" + s.id }, icon("check", 16), "Listo"),
+      h("a", { class: "back-link", href: "#/rutina" }, icon("back", 15), "Entrenamiento")),
     datalist(),
+    h("section", { class: "card session-status" }, h("div", { class: "template-head" }, status,
+      live ? h("span", { class: "session-clock" }, icon("clock", 17), h("span", { class: "live-time", "data-since": s.startedAt || Date.now() }, "0:00")) : h("span", {}, minutesText(sessionMinutes(s)))),
+      h("div", { class: "session-track" }, fill)),
     wrap,
-    h("form", { class: "row add-ex", onSubmit: (ev) => {
+    h("form", { class: "card add-ex", onSubmit: (ev) => {
       ev.preventDefault();
       const n = addName.value.trim();
       if (!n) return;
@@ -381,8 +454,14 @@ export function renderSession(ctx) {
       active = { id: s.id, ei: s.exercises.length - 1, si: 0 };
       save();
       addName.value = "";
+      addName.blur();
       draw();
-    } }, addName, h("button", { class: "btn ghost", type: "submit" }, "Añadir")),
+      wrap.lastElementChild?.scrollIntoView({ block: "start" });
+    } }, h("label", { class: "field-label", for: "add-exercise" }, "Añadir ejercicio"),
+      h("div", { class: "add-ex-row" }, addName, h("button", { class: "btn soft", type: "submit" }, icon("plus", 16), "Añadir"))),
+    live && h("aside", { class: "session-dock", "aria-label": "Controles de la sesión" },
+      h("a", { class: "dock-back icon-btn", href: "#/rutina", "aria-label": "Volver a entrenamiento" }, icon("back", 19)),
+      h("div", { class: "dock-copy" }, dockName, dockDetail), dockAction),
     h("div", { class: "row end" },
       h("button", { class: "btn danger ghost", onClick: () => confirmSheet(live ? "Descartar entreno" : "Borrar entreno", "Se borra este entreno y sus series.", live ? "Descartar" : "Borrar", () => {
         state.sessions = state.sessions.filter((x) => x.id !== s.id);
@@ -391,7 +470,6 @@ export function renderSession(ctx) {
         save();
         ctx.go("#/rutina");
       }) }, live ? "Descartar" : "Borrar entreno"),
-      live && h("button", { class: "btn primary", onClick: finish }, "Terminar entreno"),
     ),
   );
 }

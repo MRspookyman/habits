@@ -1,5 +1,5 @@
-import { h, fmt, num, qty, toast, sheet, field, confirmSheet, dec, segmented } from "../ui.js";
-import { state, dateKey, addDays, setBody, exerciseInfo, applyKcal, roleHabit } from "../store.js";
+import { h, fmt, qty, toast, segmented, pageHead, actionButton } from "../ui.js";
+import { state, dateKey, addDays, exerciseInfo, applyKcal, roleHabit } from "../store.js";
 import {
   calorieAdvice, compliance, mean, dayCompletion, streak, trendSeries, weeklyRate, RATE_TARGET,
   exerciseHistory, setsPerGroup, weeklyStats, weekStart, weekSummary, isWorkSet, firstUseDate,
@@ -7,44 +7,21 @@ import {
 } from "../logic.js";
 import { lineChart, barChart, heatmap, levelFromPct } from "../charts.js";
 import { GROUPS } from "../exercises.js";
-import { shortDate, rateText, weekSummaryBlock, rangeText, setLabel, kgText } from "./shared.js";
+import { shortDate, rateText, weekSummaryBlock, rangeText, setLabel, kgText, editBody } from "./shared.js";
 import * as health from "../health.js";
 
-const ui = { tab: "cuerpo", range: 90, exercise: null, week: "last", allEntries: false };
-
-function editEntry(ctx, entry) {
-  sheet(entry ? "Editar registro" : "Nuevo registro", (close) => {
-    const d = h("input", { type: "date", value: entry?.date || dateKey(), max: dateKey(), required: true });
-    const w = h("input", { type: "text", inputmode: "decimal", value: dec(entry?.weight), placeholder: "90,4" });
-    const f = h("input", { type: "text", inputmode: "decimal", value: dec(entry?.fat), placeholder: "13,0" });
-    return h("form", { onSubmit: (e) => {
-      e.preventDefault();
-      const wv = num(w.value);
-      const fv = num(f.value);
-      if ((w.value && wv == null) || (f.value && fv == null)) return toast("Escribe números, por ejemplo 90,4", "error");
-      if (entry && entry.date !== d.value) setBody(entry.date, null, null);
-      setBody(d.value, wv, fv);
-      close();
-      ctx.rerender();
-    } },
-      field("Fecha", d), field("Peso (kg)", w), field("Grasa (%)", f, "Déjalo vacío si ese día no lo mediste."),
-      h("div", { class: "row end" },
-        entry && h("button", { type: "button", class: "btn danger ghost", onClick: () => confirmSheet("Borrar registro", `Se borra el registro del ${shortDate(entry.date)}.`, "Borrar", () => { setBody(entry.date, null, null); close(); ctx.rerender(); }) }, "Borrar"),
-        h("button", { type: "submit", class: "btn primary" }, "Guardar"),
-      ),
-    );
-  });
-}
+const ui = { range: 90, exercise: null, week: "this", allEntries: false };
 
 // --- Hábitos ---
 function heatmapCard(ctx, today) {
   const from = addDays(weekStart(today), -25 * 7);
   const first = firstUseDate(state);
   const comp = first ? compliance(state, first > from ? first : from, today) : null;
+  const days = streak(state, today);
   return h("section", { class: "card heat-card" },
     h("div", { class: "template-head" },
-      h("h2", {}, "26 semanas"),
-      h("p", { class: "heat-stats" }, h("strong", {}, `${streak(state, today)}`), " días de racha · ", h("strong", {}, comp == null ? "—" : `${Math.round(comp * 100)} %`), " cumplido"),
+      h("h2", {}, "Actividad de seis meses"),
+      h("p", { class: "heat-stats" }, `${days} ${days === 1 ? "día" : "días"} de racha`, comp != null && ` · ${Math.round(comp * 100)} % cumplido`),
     ),
     heatmap({
       today,
@@ -78,7 +55,7 @@ function habitRatesCard(today) {
           h("span", { class: "g-track" }, h("span", { class: "g-fill", style: { width: `${r.pct * 100}%` } })),
           h("span", { class: "g-num" }, `${Math.round(r.pct * 100)} %`),
         ))),
-    h("p", { class: "hint" }, "Ordenados de peor a mejor. Los días omitidos no cuentan."),
+    rows.length > 0 ? h("p", { class: "hint" }, "De menor a mayor constancia. Los días omitidos quedan fuera del cálculo.") : h("a", { class: "text-action", href: "#/hoy" }, "Abrir mi día"),
   );
 }
 
@@ -141,7 +118,7 @@ function expenditureCard(today) {
       : h("p", { class: "muted" }, `Para calcular tu gasto real me falta: ${[
           e.logged < e.needLogged && `apuntar lo que comes en «${kcal.name}» al menos ${e.needLogged} de los últimos ${e.days} días (llevas ${e.logged})`,
           e.weighins < e.needWeighins && `${e.needWeighins} pesajes en ese tiempo (llevas ${e.weighins})`,
-        ].filter(Boolean).join(" y ") || "un pesaje de hace 4 semanas"}. Con eso el consejo de calorías será exacto.`),
+        ].filter(Boolean).join(" y ") || "un pesaje de hace 4 semanas"}. Con esos registros se podrá estimar el gasto.`),
     h("p", { class: "hint" }, "No cuentan los días con menos de la mitad del objetivo: suelen ser días apuntados a medias."),
   );
 }
@@ -169,9 +146,9 @@ function entriesCard(ctx) {
   return h("section", { class: "card" },
     h("h2", {}, "Pesajes"),
     entries.length === 0
-      ? h("p", { class: "muted" }, "Aún no hay pesajes. Pésate en ayunas 3–4 días por semana y apúntalo en Hoy.")
+      ? h("p", { class: "muted" }, "Tus pesajes aparecerán aquí. Puedes añadir el primero con «Registrar peso».")
       : h("ul", { class: "entries" }, entries.slice(0, ui.allEntries ? entries.length : 10).map((b) => h("li", {},
-          h("button", { class: "link-row", onClick: () => editEntry(ctx, b) },
+          h("button", { class: "link-row", onClick: () => editBody(ctx, b) },
             h("span", {}, shortDate(b.date)),
             h("span", {}, b.weight != null ? `${fmt(b.weight)} kg` : "—", h("span", { class: "muted" }, b.fat != null ? ` · ${fmt(b.fat)} %` : "")),
           )))),
@@ -265,27 +242,30 @@ function weeklyCards(today) {
   ];
 }
 
-const TABS = [["cuerpo", "Cuerpo"], ["gimnasio", "Gimnasio"], ["habitos", "Hábitos"]];
+const TABS = [["habitos", "Hábitos"], ["cuerpo", "Cuerpo"], ["gimnasio", "Entrenamiento"]];
 
 export function renderProgress(ctx) {
   const today = dateKey();
+  const selected = TABS.some(([v]) => v === ctx.params.section) ? ctx.params.section : "habitos";
   const wk = weekStart(today);
-  const sum = weekSummary(state, ui.week === "last" ? addDays(wk, -7) : wk);
-  const weekCard = h("section", { class: "card" },
-    h("div", { class: "template-head" }, h("h2", {}, rangeText(sum.from, sum.to)), segmented([["last", "Pasada"], ["this", "Esta"]], ui.week, (v) => { ui.week = v; ctx.rerender(); }, "Semana")),
+  const sum = weekSummary(state, ui.week === "last" ? addDays(wk, -7) : wk, today);
+  const weekCard = h("section", { class: "card week-report" },
+    h("div", { class: "template-head" }, h("div", {}, h("h2", {}, "Resumen semanal"), h("p", { class: "muted" }, rangeText(sum.from, sum.to))),
+      segmented([["this", "Esta semana"], ["last", "Anterior"]], ui.week, (v) => { ui.week = v; ctx.rerender(); }, "Semana")),
     weekSummaryBlock(sum),
   );
 
   const sections = {
-    cuerpo: () => [weightCard(ctx, today), adviceCard(ctx, today), expenditureCard(today), fatCard(today), recoveryCards(today), entriesCard(ctx)],
+    cuerpo: () => [weightCard(ctx, today), entriesCard(ctx), fatCard(today), recoveryCards(today), adviceCard(ctx, today), expenditureCard(today)],
     gimnasio: () => [exerciseCard(ctx), groupsCard(today), weeklyCards(today)],
     habitos: () => [heatmapCard(ctx, today), habitRatesCard(today)],
   };
 
   return h("frag", {},
-    h("header", { class: "page-head" }, h("h1", {}, "Progreso"), h("button", { class: "btn primary small", onClick: () => editEntry(ctx, null) }, "Añadir pesaje")),
+    pageHead("Mi progreso", null, actionButton("Registrar peso", "scale", () => editBody(ctx))),
     weekCard,
-    h("div", { class: "section-tabs" }, segmented(TABS, ui.tab, (v) => { ui.tab = v; ctx.rerender(); }, "Sección")),
-    sections[ui.tab](),
+    h("nav", { class: "sub-nav", "aria-label": "Tipos de progreso" }, TABS.map(([v, label]) =>
+      h("a", { href: "#/progreso/" + v, "aria-current": selected === v ? "page" : null }, label))),
+    h("div", { class: "report-grid" }, sections[selected]()),
   );
 }

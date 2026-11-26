@@ -1,4 +1,5 @@
-// Utilidades mínimas de DOM.
+import { icon } from "./icons.js";
+
 export function h(tag, props = {}, ...children) {
   const el = tag === "frag" ? document.createDocumentFragment() : document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -23,18 +24,18 @@ function append(el, children) {
   }
 }
 
-let toastTimer;
 export function toast(text, kind = "info") {
-  let t = document.getElementById("toast");
+  const host = Array.from(document.querySelectorAll("dialog[open]")).at(-1) || document.body;
+  let t = host.querySelector(":scope > .toast");
   if (!t) {
-    t = h("div", { id: "toast", role: "status", "aria-live": "polite" });
-    document.body.append(t);
+    t = h("div", { class: "toast", role: "status", "aria-live": "polite" });
+    host.append(t);
   }
   t.textContent = text;
   t.dataset.kind = kind;
   t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), kind === "error" ? 6000 : 2600);
+  clearTimeout(t.hideTimer);
+  t.hideTimer = setTimeout(() => t.classList.remove("show"), kind === "error" ? 6000 : 2600);
 }
 
 // Hoja inferior modal. `build(close)` devuelve el contenido.
@@ -43,15 +44,19 @@ export function sheet(title, build) {
   const close = () => {
     dlg.close();
     dlg.remove();
-    prevFocus?.focus?.();
+    if (prevFocus?.isConnected) prevFocus.focus({ preventScroll: true });
   };
   const dlg = h(
     "dialog",
     { class: "sheet", "aria-label": title, onCancel: (e) => { e.preventDefault(); close(); } },
-    h("div", { class: "sheet-head" }, h("h2", {}, title), h("button", { class: "icon-btn", "aria-label": "Cerrar", onClick: close }, "✕")),
+    h("div", { class: "sheet-head" }, h("h2", {}, title), h("button", { class: "icon-btn", "aria-label": "Cerrar", onClick: close }, icon("x"))),
     h("div", { class: "sheet-body" }, build(close)),
   );
-  dlg.addEventListener("click", (e) => { if (e.target === dlg) close(); });
+  dlg.addEventListener("click", (e) => {
+    if (e.target !== dlg) return;
+    const r = dlg.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) close();
+  });
   document.body.append(dlg);
   dlg.showModal();
   return close;
@@ -112,4 +117,11 @@ export function field(label, input, hint) {
 // Botones de opción única. options: [[valor, texto], …]
 export const segmented = (options, value, onPick, label) =>
   h("div", { class: "segmented", role: "group", "aria-label": label },
-    options.map(([v, text]) => h("button", { type: "button", class: v === value ? "on" : "", "aria-pressed": String(v === value), onClick: () => onPick(v) }, text)));
+    options.map(([v, text]) => h("button", { type: "button", class: v === value ? "on" : "", "data-focus": label + "-" + v, "aria-pressed": String(v === value), onClick: () => onPick(v) }, text)));
+
+export const pageHead = (title, subtitle, action, overline) =>
+  h("header", { class: "page-head" }, h("div", { class: "page-title" },
+    overline, h("h1", {}, title), subtitle && h("p", {}, subtitle)), action);
+
+export const actionButton = (text, symbol, onClick, classes = "primary") =>
+  h("button", { type: "button", class: "btn " + classes, onClick }, icon(symbol, 18), text);

@@ -1,10 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0e1726"/>
-  <g transform="rotate(-35 256 256)" fill="#ff7f2a">
-    <rect x="150" y="238" width="212" height="36" rx="10"/>
-    <rect x="112" y="166" width="44" height="180" rx="14"/>
-    <rect x="70" y="196" width="40" height="120" rx="12"/>
-    <rect x="356" y="166" width="44" height="180" rx="14"/>
-    <rect x="402" y="196" width="40" height="120" rx="12"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="17" fill="#205548"/>
+  <circle cx="42" cy="20" r="6" fill="#ffc283"/>
+  <g fill="none" stroke="#f3f6df" stroke-width="4.4" stroke-linecap="round">
+    <path d="M13 32c6 0 8-9 15-9 5 0 7 4 11 5"/>
+    <path d="M13 40c10 0 13-11 21-8 5 2 9 6 17 2"/>
+    <path d="M15 47c9 0 14-9 21-6 5 2 8 3 13 1"/>
   </g>
 </svg>

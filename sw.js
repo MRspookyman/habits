@@ -3,13 +3,16 @@
 import * as db from "./js/db.js";
 import { CONFIG } from "./js/config.js";
 
-const VERSION = "habits-v5";
+const VERSION = "habits-v6";
 const SHELL = [
   "./",
   "index.html",
   "manifest.webmanifest",
   "css/app.css",
+  "assets/sierra.webp",
+  "assets/estudio.webp",
   "js/app.js",
+  "js/icons.js",
   "js/config.js",
   "js/db.js",
   "js/backup.js",
@@ -23,17 +26,17 @@ const SHELL = [
   "js/health.js",
   "js/push.js",
   "js/views/today.js",
+  "js/views/calendar.js",
+  "js/views/habits.js",
   "js/views/routine.js",
   "js/views/progress.js",
   "js/views/settings.js",
-  "fonts/barlow-400.woff2",
-  "fonts/barlow-500.woff2",
-  "fonts/barlow-600.woff2",
-  "fonts/barlowcond-600.woff2",
-  "fonts/barlowcond-800.woff2",
+  "fonts/dm-sans.woff2",
+  "fonts/instrument-serif.woff2",
   "icons/icon.svg",
   "icons/icon-192.png",
   "icons/icon-512.png",
+  "icons/icon-maskable-512.png",
   "icons/badge-96.png",
 ];
 const ICON = "icons/icon-192.png";
@@ -51,7 +54,7 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("habits-v") && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });

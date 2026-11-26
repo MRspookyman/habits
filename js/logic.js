@@ -466,7 +466,8 @@ export function weeklyStats({ sessions, health }, today, weeks = 12) {
   const current = weekStart(today);
   for (let i = weeks - 1; i >= 0; i--) {
     const from = shift(current, -7 * i);
-    const to = shift(from, 6);
+    const end = shift(from, 6);
+    const to = end < today ? end : today;
     const ss = sessions.filter((s) => s.date >= from && s.date <= to && s.exercises.some((e) => e.sets.some(isWorkSet)));
     let sport = 0;
     for (let k = from; k <= to; k = shift(k, 1)) sport += sportMinutes(health, k);
@@ -494,8 +495,9 @@ export function sessionPRs(sessions, s) {
 }
 
 // Resumen de la semana que empieza en `from` (lunes).
-export function weekSummary(s, from) {
-  const to = shift(from, 6);
+export function weekSummary(s, from, through) {
+  const end = shift(from, 6);
+  const to = through && through < end ? through : end;
   const [w] = weeklyStats(s, to, 1);
   const trend = trendSeries(s.body, "weight", to);
   const inWeek = trend.filter((p) => p.date >= from && p.date <= to && p.raw != null);

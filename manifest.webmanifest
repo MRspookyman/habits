@@ -1,14 +1,13 @@
 {
   "name": "Habits",
   "short_name": "Habits",
-  "description": "Hábitos diarios, rutina de gimnasio y progreso para ganar masa muscular.",
+  "description": "Tu diario de hábitos, entrenamientos y progreso.",
   "lang": "es",
   "start_url": "./#/hoy",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#0E1726",
-  "theme_color": "#0E1726",
+  "background_color": "#f7f8f3",
+  "theme_color": "#f7f8f3",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },

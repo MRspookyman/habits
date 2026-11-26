@@ -18,8 +18,11 @@ const addDays = (k, n) => {
 };
 const MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
-function empty(svg, W, H, msg) {
-  svg.append(text({ x: W / 2, y: H / 2, "text-anchor": "middle", class: "chart-empty" }, msg));
+function empty(svg, W, msg) {
+  svg.setAttribute("viewBox", `0 0 ${W} 58`);
+  svg.setAttribute("aria-label", svg.getAttribute("aria-label") + ". " + msg);
+  svg.classList.add("is-empty");
+  svg.append(text({ x: W / 2, y: 33, "text-anchor": "middle", class: "chart-empty" }, msg));
   return svg;
 }
 
@@ -31,7 +34,7 @@ export function lineChart({ series, label, yFmt = (v) => v.toFixed(1), height = 
   const pad = { l: 40, r: 10, t: 12, b: 24 };
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img", "aria-label": label });
   const all = series.flatMap((x) => x.points).filter((p) => p.value != null);
-  if (all.length < 2) return empty(svg, W, H, emptyText);
+  if (all.length < 2) return empty(svg, W, emptyText);
 
   const corr = corridor && [
     { date: corridor.from.date, lo: corridor.from.value, hi: corridor.from.value },
@@ -89,7 +92,7 @@ export function barChart({ bars, label, yFmt = (v) => String(Math.round(v)), hei
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img", "aria-label": label });
   const totals = bars.map((b) => b.values.reduce((a, v) => a + v, 0));
   const max = Math.max(...totals, band?.max || 0);
-  if (!(max > 0)) return empty(svg, W, H, "Aún no hay datos");
+  if (!(max > 0)) return empty(svg, W, "Aún no hay datos");
   const top = max * 1.1;
   const Y = (v) => pad.t + (1 - v / top) * (H - pad.t - pad.b);
   for (let i = 0; i <= 2; i++) {
@@ -144,9 +147,22 @@ export function heatmap({ today, weeks = 26, levelOf, markOf, onPick, label }) {
       const lvl = levelOf(k);
       const r = s("rect", { x, y, width: cell, height: cell, rx: 2.5, class: `hm-cell l${lvl ?? "x"}${k === today ? " today" : ""}`, "data-date": k });
       const title = s("title");
-      title.textContent = k;
+      title.textContent = new Date(k + "T12:00:00").toLocaleDateString("es-ES", { dateStyle: "long" });
       r.append(title);
-      if (onPick) r.addEventListener("click", () => onPick(k));
+      if (onPick) {
+        r.setAttribute("role", "button");
+        r.setAttribute("aria-label", title.textContent);
+        r.setAttribute("tabindex", k === today ? "0" : "-1");
+        r.addEventListener("click", () => onPick(k));
+        r.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onPick(k); return; }
+          const step = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -7, ArrowRight: 7 }[ev.key];
+          if (!step) return;
+          ev.preventDefault();
+          const next = svg.querySelector(`[data-date="${addDays(k, step)}"]`);
+          if (next) { r.setAttribute("tabindex", "-1"); next.setAttribute("tabindex", "0"); next.focus(); }
+        });
+      }
       svg.append(r);
       if (markOf?.(k)) svg.append(s("circle", { cx: x + cell / 2, cy: y + cell / 2, r: 1.8, class: "hm-mark", "pointer-events": "none" }));
     }
