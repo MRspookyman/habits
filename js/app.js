@@ -4,6 +4,7 @@ import { init, reload, onChange, state } from "./store.js";
 import * as health from "./health.js";
 import * as push from "./push.js";
 import * as backup from "./backup.js";
+import { applyTheme } from "./theme.js";
 import * as timer from "./timer.js";
 import { renderToday, showCapture } from "./views/today.js";
 import { renderRoutine, renderSession } from "./views/routine.js";
@@ -109,6 +110,7 @@ async function refresh() {
 }
 
 async function start() {
+  applyTheme();
   await init();
   // Pide al navegador que no borre los datos aunque falte espacio.
   navigator.storage?.persist?.().catch(() => {});

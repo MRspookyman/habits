@@ -3,12 +3,14 @@
 import * as db from "./js/db.js";
 import { CONFIG } from "./js/config.js";
 
-const VERSION = "habits-v6";
+const VERSION = "habits-v7";
 const SHELL = [
   "./",
   "index.html",
   "manifest.webmanifest",
   "css/app.css",
+  "css/dark.css",
+  "js/theme.js",
   "assets/sierra.webp",
   "assets/estudio.webp",
   "js/app.js",

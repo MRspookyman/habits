@@ -1,4 +1,5 @@
-import { h, sheet, confirmSheet, toast, field, num, qty, pageHead } from "../ui.js";
+import { h, sheet, confirmSheet, toast, field, num, qty, pageHead, segmented } from "../ui.js";
+import { getTheme, setTheme } from "../theme.js";
 import { state, save, roleHabit, exportJSON, importJSON, dateKey, wipe } from "../store.js";
 import { icon } from "../icons.js";
 import * as push from "../push.js";
@@ -244,8 +245,15 @@ export function renderSettings(ctx) {
       : h("p", { class: "muted" }, "En Safari, abre Compartir y elige «Añadir a pantalla de inicio». Si aparece «Abrir como app web», actívalo antes de añadirla."),
   );
 
+  const themeCard = h("section", { class: "card" },
+    h("span", { class: "tile tone-lavender" }, icon("moon")),
+    h("h2", {}, "Apariencia"),
+    h("p", { class: "muted" }, "Automático sigue el modo claro u oscuro del móvil."),
+    segmented([["auto", "Automático"], ["light", "Claro"], ["dark", "Oscuro"]], getTheme(), (v) => { setTheme(v); ctx.rerender(); }, "Tema"),
+  );
+
   return h("frag", {},
-    header, nav, h("div", { class: "settings-grid" }, pushCard,
+    header, nav, h("div", { class: "settings-grid" }, themeCard, pushCard,
       h("section", { class: "card" }, h("span", { class: "tile tone-sky" }, icon("heart")), h("h2", {}, "Google Health"), googleBody),
       installCard),
   );
