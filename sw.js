@@ -1,5 +1,5 @@
 // Service worker: funciona sin conexión y muestra las notificaciones push.
-const VERSION = "habits-v1";
+const VERSION = "habits-v2";
 const SHELL = [
   "./",
   "index.html",
