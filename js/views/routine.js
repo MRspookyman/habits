@@ -1,6 +1,6 @@
 import { h, sheet, confirmSheet, toast, num, fmt, field, dec } from "../ui.js";
 import { state, save, uid, dateKey, exerciseInfo, setExerciseInfo, knownExerciseNames } from "../store.js";
-import { stalledExercises, lastPerformance, bestMarks, setPR, isWorkSet, plateBreakdown, sessionMinutes, sessionVolume, sessionPRs } from "../logic.js";
+import { stalledExercises, lastPerformance, bestMarks, setPR, isWorkSet, plateBreakdown, sessionMinutes, sessionVolume, sessionPRs, suggestSets } from "../logic.js";
 import { GROUPS, groupName } from "../exercises.js";
 import * as timer from "../timer.js";
 import { shortDate, setLabel, kgText, minutesText } from "./shared.js";
@@ -36,7 +36,9 @@ export function renderRoutine(ctx) {
           h("h2", {}, t.name),
           h("button", { class: "btn ghost small", onClick: () => editTemplate(ctx, t) }, "Editar"),
         ),
-        h("ul", { class: "tpl-list" }, t.exercises.map((e) => h("li", {}, h("span", {}, e.name), h("span", { class: "muted" }, `${e.sets} × ${e.reps}`)))),
+        h("ul", { class: "tpl-list" }, t.exercises.map((e, i) => h("li", { class: e.superset && t.exercises[i + 1] ? "ss" : "" },
+          h("span", {}, e.name, e.superset && t.exercises[i + 1] && h("span", { class: "muted" }, " · superserie")),
+          h("span", { class: "muted" }, `${e.sets} × ${e.reps}`)))),
         h("button", { class: "btn primary block", disabled: !t.exercises.length || Boolean(live), onClick: () => startSession(ctx, t) }, live ? "Termina el entreno en curso primero" : "Empezar entreno"),
       )),
       h("button", { class: "btn ghost block", onClick: () => editTemplate(ctx, null) }, "Nueva plantilla"),
@@ -76,7 +78,12 @@ function editTemplate(ctx, existing) {
             h("button", { type: "button", class: "icon-btn", "aria-label": "Subir", disabled: i === 0, onClick: () => { [t.exercises[i - 1], t.exercises[i]] = [t.exercises[i], t.exercises[i - 1]]; draw(); } }, "↑"),
             h("button", { type: "button", class: "icon-btn", "aria-label": "Quitar", onClick: () => { t.exercises.splice(i, 1); draw(); } }, "✕"),
           ),
-          grp,
+          h("div", { class: "ex-extra" },
+            grp,
+            i < t.exercises.length - 1 && h("label", { class: "switch small" },
+              h("input", { type: "checkbox", checked: Boolean(e.superset), onChange: (ev) => (e.superset = ev.target.checked) }),
+              h("span", {}, "Superserie con el siguiente")),
+          ),
         );
       }));
     };
@@ -85,7 +92,8 @@ function editTemplate(ctx, existing) {
       onSubmit: (ev) => {
         ev.preventDefault();
         t.name = name.value.trim();
-        t.exercises = t.exercises.filter((e) => e.name.trim()).map((e) => ({ id: e.id || uid(), name: e.name.trim(), sets: e.sets, reps: e.reps }));
+        const kept = t.exercises.filter((e) => e.name.trim());
+        t.exercises = kept.map((e, i) => ({ id: e.id || uid(), name: e.name.trim(), sets: e.sets, reps: e.reps, superset: Boolean(e.superset) && i < kept.length - 1 }));
         if (!t.name) return toast("Ponle un nombre a la plantilla", "error");
         // El grupo se guarda en la biblioteca del ejercicio (sirve para todas las plantillas).
         for (const e of list.querySelectorAll("li")) {
@@ -118,14 +126,13 @@ function editTemplate(ctx, existing) {
   });
 }
 
-// Crea las series con los valores de la última vez para no tener que reescribirlos.
-function prefilledSets(name, count, before) {
+// Series con lo de la última vez y la progresión sugerida para el rango de la plantilla.
+function prefilled(name, count, before, target) {
   const last = lastPerformance(state.sessions, name, before);
   const prev = last ? last.sets.filter((x) => !x.warmup) : [];
-  return Array.from({ length: count }, (_, i) => {
-    const p = prev[i] || prev[prev.length - 1];
-    return { kg: p?.kg ?? "", reps: p?.reps ?? "", rir: "", done: false, warmup: false };
-  });
+  const sug = suggestSets(prev, target, exerciseInfo(name).step, count);
+  const sets = Array.from({ length: count }, (_, i) => ({ kg: sug?.sets[i].kg ?? "", reps: sug?.sets[i].reps ?? "", rir: "", done: false, warmup: false }));
+  return { sets, suggest: sug && sug.kind !== "same" ? sug.kind : null };
 }
 
 function startSession(ctx, t) {
@@ -137,7 +144,7 @@ function startSession(ctx, t) {
     name: t.name,
     startedAt: Date.now(),
     finishedAt: null,
-    exercises: t.exercises.map((e) => ({ name: e.name, target: e.reps, sets: prefilledSets(e.name, e.sets, today) })),
+    exercises: t.exercises.map((e) => ({ name: e.name, target: e.reps, superset: Boolean(e.superset), ...prefilled(e.name, e.sets, today, e.reps) })),
   };
   state.sessions.push(s);
   save();
@@ -166,15 +173,17 @@ function exerciseSettings(name, onSave) {
     let group = info.group;
     const rest = h("input", { type: "number", inputmode: "numeric", min: 0, max: 600, value: info.rest });
     const step = h("input", { type: "text", inputmode: "decimal", value: dec(info.step) });
+    const note = h("textarea", { rows: 2, value: info.note, placeholder: "Asiento en 4, agarre ancho…" });
     return h("form", { onSubmit: (e) => {
       e.preventDefault();
-      setExerciseInfo(name, { group, rest: Math.max(0, Number(rest.value) || 0), step: Math.max(0, num(step.value) ?? 2.5) });
+      setExerciseInfo(name, { group, rest: Math.max(0, Number(rest.value) || 0), step: Math.max(0, num(step.value) ?? 2.5), note: note.value.trim() });
       close();
       onSave();
     } },
       h("div", { class: "field" }, h("span", { class: "field-label" }, "Grupo muscular"), groupSelect(group, (g) => (group = g))),
-      field("Descanso (segundos)", rest, "0 = sin temporizador."),
-      field("Salto de peso de los botones (kg)", step, "Por ejemplo 2,5 en barra y 2 en mancuernas."),
+      field("Descanso (segundos)", rest, "0 = sin temporizador. Las series de calentamiento no lo ponen en marcha."),
+      field("Salto de peso (kg)", step, "Para los botones y para sugerir cuánto subir. Por ejemplo 2,5 en barra y 2 en mancuernas."),
+      field("Nota", note, "Se muestra cada vez que haces el ejercicio."),
       h("div", { class: "row end" }, h("button", { class: "btn primary", type: "submit" }, "Guardar")),
     );
   });
@@ -253,9 +262,22 @@ export function renderSession(ctx) {
               save();
               if (x.done) {
                 navigator.vibrate?.(40);
-                if (live && info.rest > 0) timer.start(info.rest, e.name);
+                // Superserie: tras una serie va la del siguiente ejercicio sin descanso;
+                // al acabar la del último del grupo, descanso y vuelta al primero.
+                const pendingFrom = (from, to) => {
+                  for (let j = from; j <= to; j++) {
+                    const k = s.exercises[j]?.sets.findIndex((y) => !y.done) ?? -1;
+                    if (k >= 0) return { id: s.id, ei: j, si: k };
+                  }
+                  return null;
+                };
+                let first = ei;
+                while (first > 0 && s.exercises[first - 1].superset) first--;
+                const next = e.superset ? pendingFrom(ei + 1, ei + 1) : null;
+                const back = !next && first < ei ? pendingFrom(first, ei) : null;
+                if (live && !x.warmup && !next && info.rest > 0) timer.start(info.rest, e.name);
                 if (setPR(x, marks)) toast(`¡Récord en ${e.name}! ${setLabel(x)}`);
-                if (isActive || !active) active = firstPending();
+                if (isActive || !active) active = next || back || firstPending();
               }
               draw();
             },
@@ -283,11 +305,16 @@ export function renderSession(ctx) {
         return h("frag", {}, row, panel);
       });
 
-      return h("article", { class: "card exercise" },
+      const suggestText = { up: `Sugerido: +${dec(info.step)} kg y vuelve al mínimo de reps`, reps: "Sugerido: +1 rep en las series que no llegaron al tope", top: "Ya llegas al tope del rango: sube la dificultad" }[e.suggest];
+      const partner = e.superset && s.exercises[ei + 1];
+      return h("article", { class: "card exercise" + (partner ? " ss-link" : "") + (s.exercises[ei - 1]?.superset ? " ss-tail" : "") },
         h("div", { class: "template-head" },
           h("div", {},
             h("h2", {}, e.name),
             h("p", { class: "ex-meta" }, groupName(info.group), e.target && ` · objetivo ${e.target}`, info.rest > 0 && ` · descanso ${info.rest} s`),
+            partner && h("p", { class: "ex-meta ss" }, `Superserie con ${partner.name}: sin descanso entre los dos`),
+            live && suggestText && h("p", { class: "ex-suggest" }, suggestText),
+            info.note && h("p", { class: "ex-note" }, info.note),
           ),
           h("button", { class: "icon-btn", "aria-label": `Ajustes de ${e.name}`, onClick: () => exerciseSettings(e.name, draw) }, "⚙"),
         ),
@@ -350,7 +377,7 @@ export function renderSession(ctx) {
       ev.preventDefault();
       const n = addName.value.trim();
       if (!n) return;
-      s.exercises.push({ name: n, target: "", sets: prefilledSets(n, 3, s.date) });
+      s.exercises.push({ name: n, target: "", superset: false, ...prefilled(n, 3, s.date, "") });
       active = { id: s.id, ei: s.exercises.length - 1, si: 0 };
       save();
       addName.value = "";

@@ -100,10 +100,16 @@ export const num = (v) => {
   const n = Number(String(v).replace(",", "."));
   return Number.isFinite(n) ? n : null;
 };
-
+// Número sin decimales sobrantes: 3 → "3", 0,5 → "0,5", 4200 → "4.200".
+export const qty = (n) => (n == null ? "—" : Number(n).toLocaleString("es-ES", { maximumFractionDigits: 2 }));
 
 // Valor numérico para un <input> de texto, con coma decimal.
 export const dec = (v) => (v == null ? "" : String(v).replace(".", ","));
 export function field(label, input, hint) {
   return h("label", { class: "field" }, h("span", { class: "field-label" }, label), input, hint && h("span", { class: "hint" }, hint));
 }
+
+// Botones de opción única. options: [[valor, texto], …]
+export const segmented = (options, value, onPick, label) =>
+  h("div", { class: "segmented", role: "group", "aria-label": label },
+    options.map(([v, text]) => h("button", { type: "button", class: v === value ? "on" : "", "aria-pressed": String(v === value), onClick: () => onPick(v) }, text)));

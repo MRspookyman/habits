@@ -1,10 +1,17 @@
 // Piezas comunes a varias pantallas.
-import { h, fmt } from "../ui.js";
+import { h, fmt, qty } from "../ui.js";
 import { parseKey } from "../store.js";
 
 export const shortDate = (k) => parseKey(k).toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" });
 export const rangeText = (from, to) =>
   `${parseKey(from).toLocaleDateString("es-ES", { day: "numeric", month: "short" })} – ${parseKey(to).toLocaleDateString("es-ES", { day: "numeric", month: "short" })}`;
+
+// Explicación de los hábitos que se marcan solos.
+export const ROLE_HINT = {
+  sleep: (x) => `se marca solo con ${qty(x.target || 8)} h de sueño de la Fitbit`,
+  gym: () => "se marca solo al entrenar",
+  weigh: () => "se marca solo al apuntar el peso",
+};
 
 export const rateText = (r) => (r == null ? "—" : `${r > 0 ? "+" : r < 0 ? "−" : ""}${fmt(Math.abs(r), 2)} kg/sem`);
 export const minutesText = (m) => (m >= 60 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, "0")}` : `${Math.round(m)} min`);

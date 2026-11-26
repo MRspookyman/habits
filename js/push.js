@@ -1,19 +1,21 @@
-// Notificaciones push: la app registra el móvil en el Worker, le envía los horarios
-// y le dice qué hábitos llevas hechos hoy para que no avise de lo ya marcado.
+// Notificaciones push: la app registra el móvil en el Worker, le envía las horas de aviso
+// de cada hábito y le dice qué hábitos están ya resueltos hoy para que no avise de ellos.
 import { CONFIG } from "./config.js";
-import { state, save, dateKey, bodyEntry } from "./store.js";
+import { state, save, dateKey, weekday } from "./store.js";
+import { habitDone, isSkippedOn, doneInWeek } from "./logic.js";
 
 export const isConfigured = () => Boolean(CONFIG.workerUrl && CONFIG.vapidPublicKey);
 export const isSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 
-const headers = () => ({
+const headers = (creds) => ({
   "Content-Type": "application/json",
-  "X-Client-Id": state.push.clientId,
-  "X-Client-Key": state.push.clientKey,
+  "X-Client-Id": creds.clientId,
+  "X-Client-Key": creds.clientKey,
 });
 
-async function call(method, path, body) {
-  const res = await fetch(CONFIG.workerUrl + path, { method, headers: headers(), body: body ? JSON.stringify(body) : undefined });
+// Llamada al Worker con las credenciales de este dispositivo (o las de un código de recuperación).
+export async function call(method, path, body, creds = state.push) {
+  const res = await fetch(CONFIG.workerUrl + path, { method, headers: headers(creds), body: body ? JSON.stringify(body) : undefined });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `Error ${res.status} del servidor`);
@@ -52,12 +54,47 @@ export async function disable() {
 
 export const sendTest = () => call("POST", "/test");
 
+// Un aviso por hora y día de la semana con todos los hábitos que tienen esa hora.
+// markIds: los que se pueden marcar con el botón «Hecho» de la notificación (los de casilla).
+export function buildReminders(habits) {
+  const groups = new Map();
+  for (const x of habits) {
+    if (!x.active || !x.remind) continue;
+    for (const d of x.perWeek ? [0, 1, 2, 3, 4, 5, 6] : x.days) {
+      const key = `${x.remind}|${d}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(x);
+    }
+  }
+  return [...groups].map(([key, list]) => {
+    const [time, d] = key.split("|");
+    return {
+      id: `${time.replace(":", "")}-${d}`,
+      title: list.length === 1 ? list[0].name : `Hábitos de las ${time}`,
+      time,
+      days: [Number(d)],
+      habitIds: list.map((x) => x.id),
+      markIds: list.filter((x) => x.kind === "check").map((x) => x.id),
+      active: true,
+    };
+  });
+}
+
 export async function syncSchedule() {
   if (!state.push.enabled) return;
   await call("PUT", "/schedule", {
-    reminders: state.reminders.map(({ id, title, time, days, habitIds, weigh, active }) => ({ id, title, time, days, habitIds, weigh, active })),
+    reminders: buildReminders(state.habits),
     habitNames: Object.fromEntries(state.habits.map((x) => [x.id, x.name])),
   });
+}
+
+// Hábitos de los que no hay que avisar hoy: hechos, omitidos, que no tocan o con la semana ya cumplida.
+function resolvedToday(today) {
+  const wd = weekday(today);
+  return state.habits.filter((x) =>
+    habitDone(state, x, today) || isSkippedOn(state, x, today) ||
+    (x.perWeek ? doneInWeek(state, x, today, false) >= x.perWeek : !x.days.includes(wd)),
+  ).map((x) => x.id);
 }
 
 export async function syncState() {
@@ -65,8 +102,7 @@ export async function syncState() {
   const today = dateKey();
   await call("PUT", "/state", {
     date: today,
-    done: state.checks[today] || [],
-    weighed: bodyEntry(today)?.weight != null,
+    done: resolvedToday(today),
     consentAt: state.google?.refreshToken && !state.google.expired ? state.google.consentAt : null,
   });
 }

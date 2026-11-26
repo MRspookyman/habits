@@ -90,11 +90,19 @@ function tick() {
   else draw();
 }
 
+// El service worker avisa del final del descanso si la app pasa a segundo plano.
+function tellWorker() {
+  navigator.serviceWorker?.ready
+    .then((reg) => reg.active?.postMessage({ type: "rest", endAt: rest?.endAt ?? null, label: rest?.label ?? "", url: location.hash }))
+    .catch(() => {});
+}
+
 export function start(seconds, label) {
   primeAudio();
   if (!(seconds > 0)) return;
   rest = { endAt: Date.now() + seconds * 1000, total: seconds, label, notified: false };
   persist();
+  tellWorker();
   draw();
 }
 
@@ -103,12 +111,15 @@ export function adjust(delta) {
   rest.endAt += delta * 1000;
   rest.total = Math.max(1, rest.total + delta);
   persist();
+  tellWorker();
   draw();
 }
 
 export function stop() {
+  const had = Boolean(rest);
   rest = null;
   persist();
+  if (had) tellWorker();
   draw();
 }
 

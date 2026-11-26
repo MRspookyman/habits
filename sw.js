@@ -1,5 +1,9 @@
-// Service worker: funciona sin conexión y muestra las notificaciones push.
-const VERSION = "habits-v4";
+// Service worker (módulo): funciona sin conexión, muestra las notificaciones push,
+// marca hábitos desde el botón «Hecho» y avisa del fin del descanso con la app en segundo plano.
+import * as db from "./js/db.js";
+import { CONFIG } from "./js/config.js";
+
+const VERSION = "habits-v5";
 const SHELL = [
   "./",
   "index.html",
@@ -7,6 +11,8 @@ const SHELL = [
   "css/app.css",
   "js/app.js",
   "js/config.js",
+  "js/db.js",
+  "js/backup.js",
   "js/logic.js",
   "js/exercises.js",
   "js/timer.js",
@@ -19,7 +25,6 @@ const SHELL = [
   "js/views/today.js",
   "js/views/routine.js",
   "js/views/progress.js",
-  "js/views/plan.js",
   "js/views/settings.js",
   "fonts/barlow-400.woff2",
   "fonts/barlow-500.woff2",
@@ -31,6 +36,8 @@ const SHELL = [
   "icons/icon-512.png",
   "icons/badge-96.png",
 ];
+const ICON = "icons/icon-192.png";
+const BADGE = "icons/badge-96.png";
 
 // Se descarga saltando la caché HTTP para no mezclar archivos de versiones distintas.
 self.addEventListener("install", (e) => {
@@ -70,23 +77,53 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch { data = { body: e.data?.text() }; }
+  const ids = Array.isArray(data.habitIds) ? data.habitIds : [];
   e.waitUntil(
     self.registration.showNotification(data.title || "Habits", {
       body: data.body || "",
       tag: data.tag || "habits",
       renotify: true,
-      icon: "icons/icon-192.png",
-      badge: "icons/badge-96.png",
-      data: { url: data.url || "./#/hoy" },
+      icon: ICON,
+      badge: BADGE,
+      actions: ids.length && data.date ? [{ action: "done", title: "Hecho ✓" }] : [],
+      data: { url: data.url || "./#/hoy", habitIds: ids, date: data.date || null },
     }),
   );
 });
 
+const windows = () => self.clients.matchAll({ type: "window", includeUncontrolled: true });
+
+// Marca los hábitos en los datos de la app y se lo cuenta a la app abierta y al Worker.
+async function markDone({ date, habitIds }) {
+  let push = null;
+  await db.update("state", (s) => {
+    if (!s) return undefined;
+    const list = new Set(s.checks[date] || []);
+    for (const id of habitIds) list.add(id);
+    s.checks[date] = [...list];
+    push = s.push;
+    return s;
+  });
+  for (const c of await windows()) c.postMessage({ type: "state-changed" });
+  if (push?.enabled && CONFIG.workerUrl) {
+    await fetch(`${CONFIG.workerUrl}/done`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Client-Id": push.clientId, "X-Client-Key": push.clientKey },
+      body: JSON.stringify({ date, ids: habitIds }),
+    }).catch(() => {});
+  }
+}
+
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const target = new URL(e.notification.data?.url || "./#/hoy", self.registration.scope).href;
+  const data = e.notification.data || {};
+  if (e.action === "done" && data.habitIds?.length) {
+    e.waitUntil(markDone(data));
+    return;
+  }
+  const target = new URL(data.url || "./#/hoy", self.registration.scope).href;
   e.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    windows().then((list) => {
       for (const c of list) {
         if (c.url.startsWith(self.registration.scope)) {
           c.navigate(target).catch(() => {});
@@ -96,4 +133,40 @@ self.addEventListener("notificationclick", (e) => {
       return self.clients.openWindow(target);
     }),
   );
+});
+
+// Temporizador de descanso: la app manda { type: "rest", endAt, label, url } (endAt null = cancelar).
+// El evento se mantiene vivo hasta el final del descanso y, si la app no está a la vista, avisa.
+let rest = null;
+function cancelRest() {
+  if (!rest) return;
+  clearTimeout(rest.timer);
+  rest.resolve();
+  rest = null;
+}
+
+self.addEventListener("message", (e) => {
+  if (e.data?.type !== "rest") return;
+  cancelRest();
+  const { endAt, label, url } = e.data;
+  if (!endAt) return;
+  e.waitUntil(new Promise((resolve) => {
+    const fire = async () => {
+      rest = null;
+      const visible = (await windows()).some((c) => c.visibilityState === "visible");
+      if (!visible) {
+        await self.registration.showNotification("Descanso terminado", {
+          body: `A por la siguiente serie · ${label}`,
+          tag: "rest",
+          renotify: true,
+          vibrate: [300, 150, 300],
+          icon: ICON,
+          badge: BADGE,
+          data: { url: url || "./#/rutina" },
+        });
+      }
+      resolve();
+    };
+    rest = { resolve, timer: setTimeout(fire, Math.max(0, endAt - Date.now())) };
+  }));
 });

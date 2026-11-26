@@ -1,19 +1,27 @@
-import { h, fmt, num, toast, dec } from "../ui.js";
+import { h, num, qty, toast, dec, sheet, field } from "../ui.js";
 import {
-  state, save, dateKey, addDays, parseKey, habitsForDay, isChecked, toggleCheck, bodyEntry, setBody,
-  proteinTotal, addProtein, undoProtein,
+  state, save, dateKey, addDays, parseKey, habitsForDay, isChecked, isSkipped, toggleCheck, setSkips,
+  bodyEntry, setBody, addAmount, undoAmount, applyKcal,
 } from "../store.js";
-import { calorieAdvice, recoveryAlerts, streak, dayCompletion, weekStart, weekSummary, isWorkSet, firstUseDate } from "../logic.js";
+import {
+  calorieAdvice, recoveryAlerts, streak, dayCompletion, weekStart, weekSummary, firstUseDate,
+  habitDone, amountTotal, doneInWeek, trainedOn,
+} from "../logic.js";
 import { levelFromPct } from "../charts.js";
-import { weekSummaryBlock, rangeText, minutesText } from "./shared.js";
+import { weekSummaryBlock, rangeText, minutesText, ROLE_HINT } from "./shared.js";
 import * as health from "../health.js";
 
 const longDate = (k) => parseKey(k).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+const ui = { mapOpen: false, healthOpen: false };
+
+// <details> que recuerda si estaba abierto entre repintados.
+const fold = (key, summary, ...content) =>
+  h("details", { class: "fold", open: ui[key], onToggle: (e) => (ui[key] = e.target.open) }, h("summary", {}, summary), ...content);
 
 // Las 4 últimas semanas como calendario (L…D), con hoy remarcado.
 function miniMap(ctx, today, day) {
   const start = addDays(weekStart(today), -21);
-  const first = firstUseDate(state.checks);
+  const first = firstUseDate(state);
   const cells = [];
   for (let i = 0; i < 28; i++) {
     const k = addDays(start, i);
@@ -21,9 +29,9 @@ function miniMap(ctx, today, day) {
       cells.push(h("span", { class: "mm-cell future", "aria-hidden": "true" }));
       continue;
     }
-    const { pct } = dayCompletion(state.habits, state.checks, k);
+    const { pct } = dayCompletion(state, k);
     const lvl = first && k >= first ? levelFromPct(pct) : null;
-    const gym = state.sessions.some((s) => s.date === k && s.exercises.some((e) => e.sets.some(isWorkSet))) || (state.health[k]?.sports || []).length > 0;
+    const gym = trainedOn(state, k);
     cells.push(h("button", {
       class: `mm-cell l${lvl ?? "x"}${k === today ? " today" : ""}${k === day && k !== today ? " sel" : ""}${gym ? " mark" : ""}`,
       "aria-current": k === day ? "date" : null,
@@ -37,24 +45,68 @@ function miniMap(ctx, today, day) {
   );
 }
 
-function proteinCard(ctx, day) {
-  const target = state.plan.protein;
-  const total = proteinTotal(day);
-  const pct = Math.min(1, total / target);
-  const add = (g) => () => { addProtein(day, g); ctx.rerender(); };
-  return h("section", { class: "card protein", "aria-label": "Proteína del día" },
-    h("div", { class: "protein-head" },
-      h("h2", {}, "Proteína"),
-      h("p", { class: "protein-num" }, h("strong", {}, String(total)), ` / ${target} g`),
-    ),
-    h("div", { class: "meter", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": target, "aria-valuenow": total, "aria-label": "Proteína" },
-      h("div", { class: "meter-fill" + (total >= target ? " full" : ""), style: { width: `${pct * 100}%` } })),
+function customAmount(ctx, x, day) {
+  sheet(`Añadir a ${x.name}`, (close) => {
+    const input = h("input", { type: "text", inputmode: "decimal", placeholder: x.unit || "cantidad", required: true });
+    setTimeout(() => input.focus(), 50);
+    return h("form", { onSubmit: (e) => {
+      e.preventDefault();
+      const v = num(input.value);
+      if (v == null || v <= 0) return toast("Escribe una cantidad, por ejemplo 35", "error");
+      addAmount(day, x.id, v);
+      close();
+      ctx.rerender();
+    } },
+      field(`Cantidad${x.unit ? ` (${x.unit})` : ""}`, input),
+      h("div", { class: "row end" }, h("button", { class: "btn primary", type: "submit" }, "Añadir")),
+    );
+  });
+}
+
+function habitRow(ctx, x, day) {
+  const done = habitDone(state, x, day);
+  const manual = isChecked(day, x.id);
+  const skipped = !done && isSkipped(day, x.id);
+  const amount = x.kind === "amount";
+  const total = amount ? amountTotal(state, day, x.id) : 0;
+
+  const meta = [x.detail];
+  if (x.perWeek) meta.push(`${doneInWeek(state, x, day)}/${x.perWeek} esta semana`);
+  if (!amount && x.role && ROLE_HINT[x.role]) meta.push(ROLE_HINT[x.role](x));
+  if (skipped) meta.push("omitido: no cuenta");
+  const detail = meta.filter(Boolean).join(" · ");
+
+  const toggle = h("button", {
+    class: "habit" + (done ? " on" : "") + (skipped ? " skipped" : ""),
+    "aria-pressed": String(done),
+    onClick: () => {
+      if (skipped) setSkips(day, [x.id], false);
+      else if (done && !manual) return toast(amount ? "Llegó al objetivo con el contador; usa ↶ para quitar." : "Se ha marcado solo con tus datos.");
+      else toggleCheck(day, x.id);
+      ctx.rerender();
+    },
+  },
+    h("span", { class: "check", "aria-hidden": "true" }, done ? "✓" : skipped ? "–" : ""),
+    h("span", { class: "habit-text" }, h("span", { class: "habit-name" }, x.name), detail && h("span", { class: "habit-detail" }, detail)),
+    amount && h("span", { class: "habit-amount" }, h("strong", {}, qty(total)), ` / ${qty(x.target)} ${x.unit}`),
+  );
+  const skipBtn = !done && h("button", {
+    class: "skip-btn",
+    "aria-label": skipped ? `Volver a contar ${x.name}` : `Omitir ${x.name} este día`,
+    onClick: () => { setSkips(day, [x.id], !skipped); ctx.rerender(); },
+  }, skipped ? "Deshacer" : "Omitir");
+
+  if (!amount) return h("li", { class: "habit-item" }, toggle, skipBtn);
+
+  const add = (v) => () => { addAmount(day, x.id, v); ctx.rerender(); };
+  return h("li", { class: "habit-item amount" + (done ? " on" : "") },
+    h("div", { class: "habit-row" }, toggle, skipBtn),
+    h("div", { class: "meter", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": x.target, "aria-valuenow": total, "aria-label": x.name },
+      h("div", { class: "meter-fill" + (total >= x.target ? " full" : ""), style: { width: `${Math.min(1, total / x.target) * 100}%` } })),
     h("div", { class: "quick" },
-      h("button", { class: "btn", onClick: add(20) }, "+20"),
-      h("button", { class: "btn", onClick: add(30) }, "+30"),
-      h("button", { class: "btn", onClick: add(40) }, "+40"),
-      h("button", { class: "btn primary", onClick: add(40) }, "Batido"),
-      h("button", { class: "btn ghost", disabled: !total, "aria-label": "Deshacer la última toma", onClick: () => { undoProtein(day); ctx.rerender(); } }, "↶"),
+      x.quick.map((v) => h("button", { class: "btn", onClick: add(v) }, `+${dec(v)}`)),
+      h("button", { class: "btn ghost", onClick: () => customAmount(ctx, x, day) }, "Otra"),
+      h("button", { class: "btn ghost", disabled: !total, "aria-label": `Deshacer lo último de ${x.name}`, onClick: () => { undoAmount(day, x.id); ctx.rerender(); } }, "↶"),
     ),
   );
 }
@@ -62,9 +114,9 @@ function proteinCard(ctx, day) {
 export function renderToday(ctx) {
   const today = dateKey();
   const day = ctx.params.day && ctx.params.day <= today ? ctx.params.day : today;
-  const habits = habitsForDay(day);
-  const done = habits.filter((x) => isChecked(day, x.id)).length;
   const isToday = day === today;
+  const habits = habitsForDay(day);
+  const comp = dayCompletion(state, day);
 
   const nav = h("header", { class: "day-nav" },
     h("button", { class: "icon-btn", "aria-label": "Día anterior", onClick: () => ctx.go(`#/hoy/${addDays(day, -1)}`) }, "‹"),
@@ -75,21 +127,52 @@ export function renderToday(ctx) {
     h("button", { class: "icon-btn", "aria-label": "Día siguiente", disabled: isToday, onClick: () => ctx.go(addDays(day, 1) === today ? "#/hoy" : `#/hoy/${addDays(day, 1)}`) }, "›"),
   );
 
-  const pct = habits.length ? done / habits.length : 0;
-  const days = streak(state.habits, state.checks, today);
-  const board = h("section", { class: "scoreboard", "aria-label": `${done} de ${habits.length} hábitos hechos` },
+  const days = streak(state, today);
+  const left = comp.scheduled - comp.done;
+  const board = h("section", { class: "scoreboard", "aria-label": `${comp.done} de ${comp.scheduled} hábitos hechos` },
     h("div", { class: "board-top" },
       h("div", { class: "score" },
-        h("span", { class: "score-done" }, String(done)),
+        h("span", { class: "score-done" }, String(comp.done)),
         h("span", { class: "score-sep" }, "/"),
-        h("span", { class: "score-total" }, String(habits.length)),
+        h("span", { class: "score-total" }, String(comp.scheduled)),
       ),
       h("div", { class: "streak" }, h("span", { class: "streak-num" }, String(days)), h("span", { class: "streak-label" }, days === 1 ? "día de racha" : "días de racha")),
     ),
-    h("div", { class: "score-bar" }, h("div", { class: "score-fill", style: { width: `${pct * 100}%` } })),
-    h("p", { class: "score-label" }, habits.length === 0 ? "Sin hábitos programados para este día" : done === habits.length ? "Día completo" : `Te quedan ${habits.length - done}`),
-    miniMap(ctx, today, day),
+    h("div", { class: "score-bar" }, h("div", { class: "score-fill", style: { width: `${(comp.pct ?? 0) * 100}%` } })),
+    h("p", { class: "score-label" }, comp.scheduled === 0 ? "Nada pendiente para este día" : left === 0 ? "Día completo" : `Te quedan ${left}`),
+    fold("mapOpen", "Últimas 4 semanas", miniMap(ctx, today, day)),
   );
+
+  // Avisos que piden hacer algo.
+  const alerts = [];
+  if (health.isConnected() && state.google.expired) {
+    alerts.push(h("div", { class: "alert warn" },
+      h("p", {}, "El permiso semanal de Google Health ha caducado."),
+      h("button", { class: "btn small", onClick: () => health.connect() }, "Volver a conectar"),
+    ));
+  }
+  if (isToday) {
+    const a = calorieAdvice(state, today);
+    if (["up", "down", "comply"].includes(a.action)) {
+      alerts.push(h("div", { class: `alert advice ${a.action}` },
+        h("strong", {}, a.title), h("span", {}, a.detail),
+        h("div", { class: "row" },
+          a.next != null && h("button", { class: "btn primary small", onClick: () => { applyKcal(a.next, today); toast(`Objetivo: ${qty(a.next)} kcal`); ctx.rerender(); } }, "Aplicar"),
+          h("a", { class: "btn ghost small", href: "#/progreso" }, "Ver progreso"),
+        ),
+      ));
+    }
+    for (const r of recoveryAlerts(state.health, today)) alerts.push(h("div", { class: "alert warn" }, h("p", {}, r.text)));
+    const b = state.backup;
+    const first = firstUseDate(state);
+    const since = b.lastExport ? Math.floor((Date.now() - b.lastExport) / 86400000) : null;
+    if (!b.cloud && first && first <= addDays(today, -14) && (since == null || since > 30)) {
+      alerts.push(h("a", { class: "alert warn", href: "#/ajustes" },
+        h("strong", {}, "Haz una copia de seguridad"),
+        h("span", {}, since == null ? "Tus datos solo están en este móvil. Activa la copia automática en Ajustes." : `La última fue hace ${since} días. Activa la copia automática en Ajustes.`),
+      ));
+    }
+  }
 
   // Resumen de la semana pasada, los lunes, hasta que se cierre.
   let weekly = null;
@@ -105,41 +188,20 @@ export function renderToday(ctx) {
     );
   }
 
-  const list = h("ul", { class: "habit-list" },
-    habits.map((x) => {
-      const on = isChecked(day, x.id);
-      const auto = x.id === state.plan.proteinHabitId;
-      return h("li", {},
-        h("button", {
-          class: "habit" + (on ? " on" : ""),
-          "aria-pressed": String(on),
-          onClick: () => { toggleCheck(day, x.id); ctx.rerender(); },
-        },
-          h("span", { class: "check", "aria-hidden": "true" }, on ? "✓" : ""),
-          h("span", { class: "habit-text" }, h("span", { class: "habit-name" }, x.name), x.detail && h("span", { class: "habit-detail" }, auto ? `${x.detail} · se marca al llegar con el contador` : x.detail)),
-        ),
-      );
-    }),
+  const pendingIds = habits.filter((x) => !habitDone(state, x, day)).map((x) => x.id);
+  const dayOff = pendingIds.length > 0 && pendingIds.every((id) => isSkipped(day, id));
+  const list = h("section", { class: "stack" },
+    h("ul", { class: "habit-list" }, habits.map((x) => habitRow(ctx, x, day))),
+    pendingIds.length > 0 && h("button", {
+      class: "link-btn",
+      onClick: () => { setSkips(day, pendingIds, !dayOff); ctx.rerender(); },
+    }, dayOff ? "Quitar el día libre" : "Día libre: omitir lo pendiente (enfermo, viaje…)"),
   );
-
-  const alerts = [];
-  if (health.isConnected() && state.google.expired) {
-    alerts.push(h("div", { class: "alert warn" },
-      h("p", {}, "El permiso semanal de Google Health ha caducado."),
-      h("button", { class: "btn small", onClick: () => health.connect() }, "Volver a conectar"),
-    ));
-  }
-  for (const a of recoveryAlerts(state.health, today)) alerts.push(h("div", { class: "alert warn" }, h("p", {}, a.text)));
-  const advice = calorieAdvice({ body: state.body, habits: state.habits, checks: state.checks, today });
-  if (advice.action !== "nodata") {
-    alerts.push(h("a", { class: `alert advice ${advice.action}`, href: "#/progreso" },
-      h("strong", {}, advice.title), h("span", {}, advice.detail),
-    ));
-  }
 
   const entry = bodyEntry(day);
   const w = h("input", { type: "text", inputmode: "decimal", placeholder: "kg", value: dec(entry?.weight), "aria-label": "Peso en kg" });
   const f = h("input", { type: "text", inputmode: "decimal", placeholder: "%", value: dec(entry?.fat), "aria-label": "Grasa corporal en %" });
+  if (ctx.params.focusWeight) setTimeout(() => { w.scrollIntoView({ block: "center" }); w.focus(); }, 50);
   const bodyForm = h("form", {
     class: "card body-form",
     onSubmit: (e) => {
@@ -149,6 +211,7 @@ export function renderToday(ctx) {
       if ((w.value && wv == null) || (f.value && fv == null)) return toast("Escribe números, por ejemplo 90,4", "error");
       setBody(day, wv, fv);
       toast(wv == null && fv == null ? "Registro borrado" : "Peso guardado");
+      if (ctx.params.focusWeight) return ctx.go("#/hoy");
       ctx.rerender();
     },
   },
@@ -160,30 +223,29 @@ export function renderToday(ctx) {
     ),
   );
 
-  let healthCard = null;
-  if (health.isConnected()) {
-    const d = state.health[day] || {};
-    const sleep = d.sleepMin != null ? minutesText(d.sleepMin) : "—";
-    healthCard = h("section", { class: "card" },
-      h("h2", {}, "Fitbit"),
-      h("dl", { class: "stats" },
-        h("div", {}, h("dt", {}, "Sueño"), h("dd", {}, sleep)),
-        h("div", {}, h("dt", {}, "Pulso en reposo"), h("dd", {}, d.rhr != null ? `${d.rhr} lpm` : "—")),
-        h("div", {}, h("dt", {}, "Pasos"), h("dd", {}, d.steps != null ? d.steps.toLocaleString("es-ES") : "—")),
-        h("div", {}, h("dt", {}, "Kcal gastadas"), h("dd", {}, d.kcal != null ? d.kcal.toLocaleString("es-ES") : "—")),
-      ),
-      (d.sports || []).length > 0 && h("ul", { class: "sports" }, d.sports.map((x) => h("li", {},
-        h("span", {}, x.name), h("span", { class: "muted" }, `${minutesText(x.min)} · ${x.kcal.toLocaleString("es-ES")} kcal`)))),
-      h("p", { class: "hint" }, "Las kcal y los pasos de la pulsera son orientativos: para ajustar calorías manda la báscula."),
-    );
-  }
-
   const sessions = state.sessions.filter((s) => s.date === day);
-  const sessionCard = h("section", { class: "card" }, h("h2", {}, "Gimnasio"),
+  const sessionCard = (sessions.length > 0 || isToday) && h("section", { class: "card" }, h("h2", {}, "Gimnasio"),
     sessions.map((s) => h("a", { class: "link-row", href: `#/entreno/${s.id}` }, s.name, h("span", { class: "muted" }, s.finishedAt ? "Terminado" : "En curso"))),
     isToday && !sessions.some((s) => !s.finishedAt) && h("a", { class: "btn ghost block", href: "#/rutina" }, sessions.length ? "Otro entreno" : "Empezar entreno"),
   );
 
-  return h("frag", {}, nav, board, weekly, list, proteinCard(ctx, day), alerts.length > 0 && h("div", { class: "alerts" }, alerts), bodyForm, healthCard,
-    (sessions.length > 0 || isToday) && sessionCard);
+  let healthCard = null;
+  if (health.isConnected()) {
+    const d = state.health[day] || {};
+    healthCard = h("section", { class: "card" },
+      fold("healthOpen", h("h2", {}, "Fitbit", h("span", { class: "muted fold-meta" }, d.sleepMin != null ? ` · ${minutesText(d.sleepMin)} de sueño` : "")),
+        h("dl", { class: "stats" },
+          h("div", {}, h("dt", {}, "Sueño"), h("dd", {}, d.sleepMin != null ? minutesText(d.sleepMin) : "—")),
+          h("div", {}, h("dt", {}, "Pulso en reposo"), h("dd", {}, d.rhr != null ? `${d.rhr} lpm` : "—")),
+          h("div", {}, h("dt", {}, "Pasos"), h("dd", {}, d.steps != null ? d.steps.toLocaleString("es-ES") : "—")),
+          h("div", {}, h("dt", {}, "Kcal gastadas"), h("dd", {}, d.kcal != null ? d.kcal.toLocaleString("es-ES") : "—")),
+        ),
+        (d.sports || []).length > 0 && h("ul", { class: "sports" }, d.sports.map((x) => h("li", {},
+          h("span", {}, x.name), h("span", { class: "muted" }, `${minutesText(x.min)} · ${x.kcal.toLocaleString("es-ES")} kcal`)))),
+        h("p", { class: "hint" }, "Las kcal y los pasos de la pulsera son orientativos: para ajustar calorías manda la báscula."),
+      ),
+    );
+  }
+
+  return h("frag", {}, nav, board, alerts.length > 0 && h("div", { class: "alerts" }, alerts), weekly, list, bodyForm, sessionCard, healthCard);
 }

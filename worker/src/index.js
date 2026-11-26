@@ -67,15 +67,13 @@ function madridNow(date = new Date()) {
 }
 
 // Qué falta de un recordatorio. Devuelve null si no hay que avisar.
+// markIds: los pendientes que se pueden marcar desde el botón «Hecho» de la notificación.
 export function pendingFor(reminder, state, today, habitNames) {
-  const fresh = state && state.date === today;
-  const done = new Set(fresh ? state.done || [] : []);
-  const weighed = fresh && state.weighed;
-  const missing = reminder.habitIds.filter((id) => !done.has(id)).map((id) => habitNames[id]).filter(Boolean);
-  if (reminder.weigh && !weighed) missing.push("pesarte");
-  const tracked = reminder.habitIds.length > 0 || reminder.weigh;
-  if (tracked && missing.length === 0) return null;
-  return missing;
+  const done = new Set(state && state.date === today ? state.done || [] : []);
+  const ids = reminder.habitIds.filter((id) => !done.has(id) && habitNames[id]);
+  if (reminder.habitIds.length && !ids.length) return null;
+  const mark = new Set(reminder.markIds || []);
+  return { names: ids.map((id) => habitNames[id]), markIds: ids.filter((id) => mark.has(id)) };
 }
 
 async function runSchedule(env, now = new Date()) {
@@ -88,7 +86,14 @@ async function runSchedule(env, now = new Date()) {
       if (!r.active || r.time !== t.hhmm || !r.days.includes(t.wd)) continue;
       const missing = pendingFor(r, user.state, t.date, user.habitNames || {});
       if (!missing) continue;
-      messages.push({ title: r.title, body: missing.length ? `Te falta: ${missing.join(", ")}` : "Abre Habits y márcalo.", tag: `r-${r.id}`, url: "./#/hoy" });
+      messages.push({
+        title: r.title,
+        body: missing.names.length ? `Te falta: ${missing.names.join(", ")}` : "Abre Habits y márcalo.",
+        tag: `r-${r.id}`,
+        url: "./#/hoy",
+        date: t.date,
+        habitIds: missing.markIds,
+      });
     }
     const consentAt = user.state?.consentAt;
     if (consentAt && user.consentWarned !== consentAt && Date.now() >= consentAt + CONSENT_MS - CONSENT_WARN_BEFORE_MS && t.hour >= 9 && t.hour < 22) {
@@ -175,10 +180,13 @@ async function handle(req, env) {
     return json({ ok: true }, 200, h);
   }
 
+  // Se quitan los avisos pero se conserva el registro: la copia en la nube sigue accesible con su código.
   if (path === "/register" && req.method === "DELETE") {
     const a = await authUser(req, env);
     if (a.error) return json({ error: a.error }, a.status, h);
-    await env.HABITS.delete(userKey(a.id));
+    delete a.user.subscription;
+    a.user.reminders = [];
+    await env.HABITS.put(userKey(a.id), JSON.stringify(a.user));
     await setUserIds(env, (await userIds(env)).filter((x) => x !== a.id));
     return json({ ok: true }, 200, h);
   }
@@ -187,14 +195,15 @@ async function handle(req, env) {
     const a = await authUser(req, env);
     if (a.error) return json({ error: a.error }, a.status, h);
     const b = await readJSON(req);
-    if (!Array.isArray(b?.reminders) || b.reminders.length > 50) return json({ error: "Recordatorios no válidos" }, 400, h);
+    if (!Array.isArray(b?.reminders) || b.reminders.length > 150) return json({ error: "Recordatorios no válidos" }, 400, h);
+    const ids = (v) => (Array.isArray(v) ? v : []).map(String).slice(0, 30);
     a.user.reminders = b.reminders.map((r) => ({
       id: String(r.id).slice(0, 40),
       title: String(r.title || "Habits").slice(0, 80),
       time: /^\d{2}:\d{2}$/.test(r.time) ? r.time : "09:00",
       days: (Array.isArray(r.days) ? r.days : []).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6),
-      habitIds: (Array.isArray(r.habitIds) ? r.habitIds : []).map(String).slice(0, 30),
-      weigh: Boolean(r.weigh),
+      habitIds: ids(r.habitIds),
+      markIds: ids(r.markIds),
       active: r.active !== false,
     }));
     const names = {};
@@ -212,7 +221,6 @@ async function handle(req, env) {
     const next = {
       date: b.date,
       done: (Array.isArray(b.done) ? b.done : []).map(String).slice(0, 100),
-      weighed: Boolean(b.weighed),
       consentAt: Number.isFinite(b.consentAt) ? b.consentAt : null,
     };
     if (JSON.stringify(next) !== JSON.stringify(a.user.state)) {
@@ -220,6 +228,41 @@ async function handle(req, env) {
       await env.HABITS.put(userKey(a.id), JSON.stringify(a.user));
     }
     return json({ ok: true }, 200, h);
+  }
+
+  // Hábitos marcados con el botón «Hecho» de una notificación.
+  if (path === "/done" && req.method === "POST") {
+    const a = await authUser(req, env);
+    if (a.error) return json({ error: a.error }, a.status, h);
+    const b = await readJSON(req);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b?.date || "")) return json({ error: "Fecha no válida" }, 400, h);
+    const add = (Array.isArray(b.ids) ? b.ids : []).map(String).slice(0, 30);
+    const prev = a.user.state?.date === b.date ? a.user.state.done : [];
+    a.user.state = { date: b.date, done: [...new Set([...prev, ...add])].slice(0, 100), consentAt: a.user.state?.consentAt ?? null };
+    await env.HABITS.put(userKey(a.id), JSON.stringify(a.user));
+    return json({ ok: true }, 200, h);
+  }
+
+  // Copia de seguridad cifrada en el móvil: el Worker solo guarda el texto cifrado.
+  if (path === "/backup" && req.method === "PUT") {
+    const a = await authUser(req, env, { create: true });
+    if (a.error) return json({ error: a.error }, a.status, h);
+    const b = await readJSON(req);
+    if (typeof b?.iv !== "string" || typeof b?.data !== "string" || b.iv.length > 64 || b.data.length > 5_000_000) {
+      return json({ error: "Copia no válida" }, 400, h);
+    }
+    if (!(await env.HABITS.get(userKey(a.id)))) await env.HABITS.put(userKey(a.id), JSON.stringify(a.user));
+    await env.HABITS.put(`backup:${a.id}`, JSON.stringify({ iv: b.iv, data: b.data, at: Date.now() }));
+    return json({ ok: true }, 200, h);
+  }
+
+  if (path === "/backup" && req.method === "GET") {
+    const a = await authUser(req, env);
+    if (a.status === 404) return json({ error: "No hay ninguna copia con ese código" }, 404, h);
+    if (a.error) return json({ error: a.error }, a.status, h);
+    const b = await env.HABITS.get(`backup:${a.id}`, "json");
+    if (!b) return json({ error: "No hay ninguna copia con ese código" }, 404, h);
+    return json(b, 200, h);
   }
 
   if (path === "/test" && req.method === "POST") {

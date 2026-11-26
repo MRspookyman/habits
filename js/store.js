@@ -1,7 +1,11 @@
-// Estado de la app guardado en localStorage del dispositivo.
+// Estado de la app guardado en IndexedDB del dispositivo.
 import { DEFAULT_EXERCISES, normName } from "./exercises.js";
+import { visibleOn } from "./logic.js";
+import * as db from "./db.js";
 
-const KEY = "habits.v1";
+const LEGACY_KEY = "habits.v1";
+const KEY = "state";
+const VERSION = 3;
 const listeners = new Set();
 
 export const uid = () =>
@@ -29,63 +33,52 @@ export const DAY_LETTERS = ["L", "M", "X", "J", "V", "S", "D"];
 export const DAY_NAMES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 
+// kind: "check" (casilla) | "amount" (cantidad con objetivo).
+// role: qué lo enlaza con el resto de la app: "kcal" y "protein" (objetivos del plan, tipo cantidad);
+//       "sleep", "gym" y "weigh" (se marcan solos con la Fitbit, un entreno o el peso apuntado).
+// perWeek: si tiene valor, el hábito es «N veces por semana» y `days` no se usa.
+// since: día en que se creó; antes no cuenta (así un hábito nuevo no baja el historial).
+export const newHabit = (name = "", detail = "", extra = {}) => ({
+  id: uid(), name, detail, kind: "check", target: null, unit: "", quick: [], role: null,
+  days: [...ALL_DAYS], perWeek: null, remind: null, active: true, since: dateKey(), ...extra,
+});
+
 function defaults() {
-  const h = (name, detail, days = ALL_DAYS) => ({ id: uid(), name, detail, days: [...days], active: true });
-  const habits = [
-    h("Creatina", "5 g"),
-    h("Omega-3", "2 perlas con comida"),
-    h("Proteína", "170–180 g"),
-    h("Calorías", "~4.200 kcal"),
-    h("Batido casero", "100 g avena + 40 g whey + leche"),
-    h("Ashwagandha", "1 cápsula por la noche"),
-    h("Agua", "3–4 L"),
-    h("Dormir", "8 h o más"),
-  ];
-  const byName = (n) => habits.find((x) => x.name === n).id;
   return {
-    version: 1,
-    habits,
-    checks: {},
-    reminders: [
-      { id: uid(), title: "Creatina y omega-3", time: "14:00", days: [...ALL_DAYS], habitIds: [byName("Creatina"), byName("Omega-3")], weigh: false, active: true },
-      { id: uid(), title: "Batido post-entreno", time: "21:30", days: [...ALL_DAYS], habitIds: [byName("Batido casero")], weigh: false, active: true },
-      { id: uid(), title: "Pesarse en ayunas", time: "08:00", days: [0, 2, 4], habitIds: [], weigh: true, active: true },
+    version: VERSION,
+    habits: [
+      newHabit("Creatina", "5 g", { remind: "14:00" }),
+      newHabit("Omega-3", "2 perlas con comida", { remind: "14:00" }),
+      newHabit("Proteína", "", { kind: "amount", role: "protein", target: 175, unit: "g", quick: [20, 30, 40, 50] }),
+      newHabit("Calorías", "", { kind: "amount", role: "kcal", target: 4200, unit: "kcal", quick: [300, 500, 800] }),
+      newHabit("Batido casero", "100 g avena + 40 g whey + leche", { remind: "21:30" }),
+      newHabit("Ashwagandha", "1 cápsula por la noche"),
+      newHabit("Agua", "", { kind: "amount", target: 3, unit: "L", quick: [0.5, 1] }),
+      newHabit("Dormir", "", { role: "sleep", target: 8 }),
+      newHabit("Pesarse", "En ayunas", { role: "weigh", days: [0, 2, 4], remind: "08:00" }),
     ],
+    checks: {},
+    amounts: {},
+    skips: {},
     plan: {
-      kcal: 4200,
-      protein: 175,
       carbs: 600,
       fat: 90,
-      supplements: [
-        { id: uid(), name: "Creatina monohidrato", dose: "5 g", when: "Cualquier hora, todos los días" },
-        { id: uid(), name: "Omega-3 (Ultra TG)", dose: "2 perlas", when: "Con una comida" },
-        { id: uid(), name: "Whey (Evowhey)", dose: "30–40 g", when: "1–2 batidos para llegar a la proteína" },
-        { id: uid(), name: "Ashwagandha", dose: "1 cápsula", when: "Por la noche" },
-      ],
+      lastAdjust: null,
       notes:
         "Batido casero: 100 g de harina de avena + 40 g de whey + 400 ml de leche (~600 kcal, ~50 g de proteína).\n" +
+        "Whey: 30–40 g, 1–2 batidos para llegar a la proteína.\n" +
         "Objetivo: subir 0,5–1 kg al mes. Pésate en ayunas 3–4 días por semana.",
     },
     templates: [],
     sessions: [],
     exercises: {},
-    protein: {},
     body: [],
     health: {},
     ui: { weeklyDismissed: null },
+    backup: { lastExport: null, cloud: false, lastCloud: null },
     google: null,
     push: { enabled: false, clientId: uid(), clientKey: uid() + uid() },
   };
-}
-
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) return migrate(JSON.parse(raw));
-  } catch (e) {
-    console.error("No se pudo leer el estado", e);
-  }
-  return migrate(defaults());
 }
 
 function migrate(s) {
@@ -102,17 +95,102 @@ function migrate(s) {
     }
     s.version = 2;
   }
-  if (s.plan.proteinHabitId === undefined) {
-    s.plan.proteinHabitId = s.habits.find((x) => x.name.trim().toLowerCase() === "proteína")?.id || null;
-  }
+  if (s.version < 3) toV3(s);
   return s;
 }
 
-export let state = load();
+// v3: hábitos de cantidad y con rol, recordatorios dentro de cada hábito y suplementos fusionados.
+function toV3(s) {
+  const p = s.plan || {};
+  const norm = (x) => x.trim().toLowerCase();
+  for (const x of s.habits) {
+    const base = newHabit();
+    for (const k of ["kind", "target", "unit", "quick", "role", "perWeek", "remind"]) x[k] ??= base[k];
+  }
+  const byName = (n) => s.habits.find((x) => norm(x.name) === n);
+
+  const protein = s.habits.find((x) => x.id === p.proteinHabitId) || byName("proteína");
+  if (protein) {
+    Object.assign(protein, { kind: "amount", role: "protein", target: p.protein ?? 175, unit: "g", quick: [20, 30, 40, 50], detail: "" });
+    for (const [k, list] of Object.entries(s.protein || {})) if (list.length) (s.amounts[k] ||= {})[protein.id] = [...list];
+  }
+  const kcal = byName("calorías");
+  if (kcal) Object.assign(kcal, { kind: "amount", role: "kcal", target: p.kcal ?? 4200, unit: "kcal", quick: [300, 500, 800], detail: "" });
+  const water = byName("agua");
+  if (water && !water.role) Object.assign(water, { kind: "amount", target: 3, unit: "L", quick: [0.5, 1], detail: "" });
+  const sleep = byName("dormir");
+  if (sleep && !sleep.role) Object.assign(sleep, { role: "sleep", target: 8 });
+
+  // Cada recordatorio pasa a ser la hora de aviso de sus hábitos; el de pesarse, un hábito propio.
+  for (const r of s.reminders || []) {
+    if (!r.active) continue;
+    for (const id of r.habitIds) {
+      const x = s.habits.find((y) => y.id === id);
+      if (x && !x.remind) x.remind = r.time;
+    }
+    if (r.weigh && !s.habits.some((x) => x.role === "weigh")) {
+      s.habits.push(newHabit("Pesarse", "En ayunas", { role: "weigh", days: [...r.days], remind: r.time }));
+    } else if (!r.weigh && !r.habitIds.length) {
+      s.habits.push(newHabit(r.title, "", { days: [...r.days], remind: r.time }));
+    }
+  }
+
+  // Los suplementos que ya son hábito se quedan como hábito; el resto pasa a las notas.
+  const first = (x) => norm(x).split(/[\s(]/)[0];
+  const extra = (p.supplements || []).filter((x) => x.name.trim() && !s.habits.some((y) => first(y.name) === first(x.name)));
+  let notes = p.notes || "";
+  if (extra.length) notes = [notes, "Suplementos:", ...extra.map((x) => `- ${[x.name, x.dose, x.when].filter(Boolean).join(" · ")}`)].filter(Boolean).join("\n");
+
+  s.plan = { carbs: p.carbs ?? 600, fat: p.fat ?? 90, notes, lastAdjust: null };
+  delete s.protein;
+  delete s.reminders;
+  s.version = 3;
+}
+
+export let state = null;
+let writing = Promise.resolve();
+
+function write() {
+  writing = writing.catch(() => {}).then(() => db.set(KEY, state));
+  return writing;
+}
+
+// Carga el estado. La primera vez trae los datos de la versión con localStorage.
+export async function init() {
+  let s = null;
+  try {
+    s = await db.get(KEY);
+  } catch (e) {
+    console.error("No se pudo leer IndexedDB", e);
+  }
+  const legacy = !s && localStorage.getItem(LEGACY_KEY);
+  if (legacy) {
+    try { s = JSON.parse(legacy); } catch (e) { console.error("No se pudo leer el estado antiguo", e); }
+  }
+  state = migrate(s || defaults());
+  try {
+    await write();
+    if (legacy) localStorage.removeItem(LEGACY_KEY);
+  } catch (e) {
+    console.error("No se pudo guardar el estado", e);
+  }
+}
+
+// Vuelve a leer el estado (el service worker puede haberlo cambiado desde una notificación).
+export async function reload() {
+  await writing.catch(() => {});
+  const s = await db.get(KEY);
+  if (s) state = migrate(s);
+}
 
 export function save() {
-  localStorage.setItem(KEY, JSON.stringify(state));
+  write().catch((e) => console.error("No se pudo guardar", e));
   for (const fn of listeners) fn(state);
+}
+
+export async function wipe() {
+  await writing.catch(() => {});
+  await db.del(KEY);
 }
 
 export function onChange(fn) {
@@ -125,9 +203,9 @@ export function replaceState(next) {
   save();
 }
 
+// Lo que es de este dispositivo (permiso de Google, avisos, copia) no se exporta.
 export function exportJSON() {
-  // Los tokens de Google no se exportan: se vuelven a pedir al conectar.
-  const { google, ...rest } = state;
+  const { google, push, backup, ...rest } = state;
   return JSON.stringify({ ...rest, exportedAt: new Date().toISOString() }, null, 2);
 }
 
@@ -139,19 +217,53 @@ export function importJSON(text) {
   delete data.exportedAt;
   data.google = state.google;
   data.push = state.push;
+  data.backup = state.backup;
   replaceState(data);
 }
 
-// --- Consultas habituales ---
-export const habitsForDay = (k) =>
-  state.habits.filter((h) => h.active && h.days.includes(weekday(k)));
+// --- Hábitos del día ---
+export const habitsForDay = (k) => state.habits.filter((x) => visibleOn(state, x, k));
+export const roleHabit = (role) => state.habits.find((x) => x.role === role) || null;
 
 export const isChecked = (k, id) => (state.checks[k] || []).includes(id);
+export const isSkipped = (k, id) => (state.skips[k] || []).includes(id);
+
+function toggleIn(map, k, id, on) {
+  const list = new Set(map[k] || []);
+  (on ?? !list.has(id)) ? list.add(id) : list.delete(id);
+  if (list.size) map[k] = [...list];
+  else delete map[k];
+}
 
 export function toggleCheck(k, id) {
-  const list = new Set(state.checks[k] || []);
-  list.has(id) ? list.delete(id) : list.add(id);
-  state.checks[k] = [...list];
+  toggleIn(state.checks, k, id);
+  save();
+}
+
+export function setSkips(k, ids, on) {
+  for (const id of ids) toggleIn(state.skips, k, id, on);
+  save();
+}
+
+export function addAmount(k, id, value) {
+  ((state.amounts[k] ||= {})[id] ||= []).push(value);
+  save();
+}
+
+export function undoAmount(k, id) {
+  const day = state.amounts[k];
+  day?.[id]?.pop();
+  if (day?.[id]?.length === 0) delete day[id];
+  if (day && !Object.keys(day).length) delete state.amounts[k];
+  save();
+}
+
+// Aplica el consejo de calorías y recuerda cuándo, para no repetirlo hasta que el peso reaccione.
+export function applyKcal(next, today) {
+  const x = roleHabit("kcal");
+  if (!x) return;
+  state.plan.lastAdjust = { date: today, from: x.target, to: next };
+  x.target = next;
   save();
 }
 
@@ -170,43 +282,11 @@ export function setBody(k, weight, fat) {
   save();
 }
 
-// --- Proteína del día ---
-export const proteinTotal = (k) => (state.protein[k] || []).reduce((a, b) => a + b, 0);
-
-// Marca el hábito de proteína al llegar al objetivo y lo desmarca si se deshace por debajo.
-// Solo actúa al cruzar el objetivo, así no pisa una marca puesta a mano.
-function syncProteinHabit(k, before) {
-  const id = state.plan.proteinHabitId;
-  if (!id || !state.habits.some((x) => x.id === id)) return;
-  const after = proteinTotal(k);
-  const target = state.plan.protein;
-  const list = new Set(state.checks[k] || []);
-  if (before < target && after >= target) list.add(id);
-  else if (before >= target && after < target) list.delete(id);
-  else return;
-  state.checks[k] = [...list];
-}
-
-export function addProtein(k, grams) {
-  const before = proteinTotal(k);
-  (state.protein[k] ||= []).push(grams);
-  syncProteinHabit(k, before);
-  save();
-}
-
-export function undoProtein(k) {
-  const before = proteinTotal(k);
-  state.protein[k]?.pop();
-  if (state.protein[k]?.length === 0) delete state.protein[k];
-  syncProteinHabit(k, before);
-  save();
-}
-
 // --- Biblioteca de ejercicios: valores por defecto + cambios del usuario ---
 export function exerciseInfo(name) {
   const n = normName(name);
   const base = DEFAULT_EXERCISES.find((e) => normName(e.name) === n) || { name: name.trim(), group: null, rest: 90, step: 2.5 };
-  return { ...base, ...(state.exercises[n] || {}) };
+  return { note: "", ...base, ...(state.exercises[n] || {}) };
 }
 
 export function setExerciseInfo(name, patch) {
