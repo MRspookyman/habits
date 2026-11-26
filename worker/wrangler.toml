@@ -1,0 +1,18 @@
+name = "habits"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+ALLOWED_ORIGINS = "https://mrspookyman.github.io,http://localhost:8080"
+VAPID_SUBJECT = "mailto:javiermartinezmegiass@gmail.com"
+GOOGLE_CLIENT_ID = "766875163134-s2te2o6r2hic7ndlpnpm9dv8ur93cnsh.apps.googleusercontent.com"
+
+# KV para horarios y estado de hoy.
+[[kv_namespaces]]
+binding = "HABITS"
+id = "e42ab4eb37144c8482ddb1b59eda0a98"
+
+# Secretos (wrangler secret put): GOOGLE_CLIENT_SECRET, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
