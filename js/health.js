@@ -188,11 +188,16 @@ function put(k, field, value) {
   state.health[k] = { ...(state.health[k] || {}), [field]: value };
 }
 
-// Trae los últimos 14 días (31 para el pulso en reposo, para calcular la media).
+// Actividades de la Fitbit que no cuentan como deporte: caminar y la fuerza (el gimnasio lo registra la app).
+const NOT_SPORT = new Set(["WALKING", "STRENGTH_TRAINING", "WEIGHTLIFTING"]);
+const seconds = (d) => parseFloat(String(d || "0").replace("s", "")) || 0;
+
+// Trae los últimos 14 días (28 para el deporte y 31 para el pulso en reposo, para las medias).
 export async function sync() {
   const today = dateKey();
   const tomorrow = addDays(today, 1);
   const from14 = addDays(today, -13);
+  const from28 = addDays(today, -27);
   const from31 = addDays(today, -30);
   const errors = [];
 
@@ -231,9 +236,27 @@ export async function sync() {
         if (r?.date) put(keyFromCivil({ date: r.date }), "rhr", Number(r.beatsPerMinute));
       }
     },
+    sports: async () => {
+      const points = await listPoints("exercise", `exercise.interval.civil_start_time >= "${from28}"`, 25);
+      const perDay = {};
+      for (const p of points) {
+        const x = p.exercise;
+        if (!x?.interval || NOT_SPORT.has(x.exerciseType)) continue;
+        const k = localKey(x.interval.startTime, x.interval.startUtcOffset);
+        const min = (seconds(x.activeDuration) || (Date.parse(x.interval.endTime) - Date.parse(x.interval.startTime)) / 1000) / 60;
+        const day = (perDay[k] ||= {});
+        const s = (day[x.exerciseType] ||= { type: x.exerciseType, name: x.displayName || x.exerciseType, min: 0, kcal: 0 });
+        s.min += min;
+        s.kcal += Number(x.metricsSummary?.caloriesKcal || 0);
+      }
+      for (let k = from28; k <= today; k = addDays(k, 1)) {
+        const list = Object.values(perDay[k] || {}).map((s) => ({ ...s, min: Math.round(s.min), kcal: Math.round(s.kcal) }));
+        if (list.length || state.health[k]?.sports) state.health[k] = { ...(state.health[k] || {}), sports: list.sort((a, b) => b.min - a.min) };
+      }
+    },
   };
 
-  const names = { steps: "pasos", kcal: "kcal", sleep: "sueño", rhr: "pulso en reposo" };
+  const names = { steps: "pasos", kcal: "kcal", sleep: "sueño", rhr: "pulso en reposo", sports: "deporte" };
   for (const [name, fn] of Object.entries(tasks)) {
     try {
       await fn();

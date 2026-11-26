@@ -1,4 +1,6 @@
 // Estado de la app guardado en localStorage del dispositivo.
+import { DEFAULT_EXERCISES, normName } from "./exercises.js";
+
 const KEY = "habits.v1";
 const listeners = new Set();
 
@@ -66,8 +68,11 @@ function defaults() {
     },
     templates: [],
     sessions: [],
+    exercises: {},
+    protein: {},
     body: [],
     health: {},
+    ui: { weeklyDismissed: null },
     google: null,
     push: { enabled: false, clientId: uid(), clientKey: uid() + uid() },
   };
@@ -80,12 +85,26 @@ function load() {
   } catch (e) {
     console.error("No se pudo leer el estado", e);
   }
-  return defaults();
+  return migrate(defaults());
 }
 
 function migrate(s) {
   const d = defaults();
   for (const k of Object.keys(d)) if (s[k] === undefined) s[k] = d[k];
+  if ((s.version || 1) < 2) {
+    for (const ses of s.sessions) {
+      ses.startedAt ??= null;
+      ses.finishedAt ??= null;
+      for (const e of ses.exercises) for (const x of e.sets) {
+        x.done ??= Number(x.reps) > 0;
+        x.warmup ??= false;
+      }
+    }
+    s.version = 2;
+  }
+  if (s.plan.proteinHabitId === undefined) {
+    s.plan.proteinHabitId = s.habits.find((x) => x.name.trim().toLowerCase() === "proteína")?.id || null;
+  }
   return s;
 }
 
@@ -149,4 +168,56 @@ export function setBody(k, weight, fat) {
   else state.body.push(entry);
   state.body.sort((a, b) => a.date.localeCompare(b.date));
   save();
+}
+
+// --- Proteína del día ---
+export const proteinTotal = (k) => (state.protein[k] || []).reduce((a, b) => a + b, 0);
+
+// Marca el hábito de proteína al llegar al objetivo y lo desmarca si se deshace por debajo.
+// Solo actúa al cruzar el objetivo, así no pisa una marca puesta a mano.
+function syncProteinHabit(k, before) {
+  const id = state.plan.proteinHabitId;
+  if (!id || !state.habits.some((x) => x.id === id)) return;
+  const after = proteinTotal(k);
+  const target = state.plan.protein;
+  const list = new Set(state.checks[k] || []);
+  if (before < target && after >= target) list.add(id);
+  else if (before >= target && after < target) list.delete(id);
+  else return;
+  state.checks[k] = [...list];
+}
+
+export function addProtein(k, grams) {
+  const before = proteinTotal(k);
+  (state.protein[k] ||= []).push(grams);
+  syncProteinHabit(k, before);
+  save();
+}
+
+export function undoProtein(k) {
+  const before = proteinTotal(k);
+  state.protein[k]?.pop();
+  if (state.protein[k]?.length === 0) delete state.protein[k];
+  syncProteinHabit(k, before);
+  save();
+}
+
+// --- Biblioteca de ejercicios: valores por defecto + cambios del usuario ---
+export function exerciseInfo(name) {
+  const n = normName(name);
+  const base = DEFAULT_EXERCISES.find((e) => normName(e.name) === n) || { name: name.trim(), group: null, rest: 90, step: 2.5 };
+  return { ...base, ...(state.exercises[n] || {}) };
+}
+
+export function setExerciseInfo(name, patch) {
+  const n = normName(name);
+  state.exercises[n] = { ...(state.exercises[n] || {}), ...patch };
+  save();
+}
+
+export function knownExerciseNames() {
+  const names = new Map(DEFAULT_EXERCISES.map((e) => [normName(e.name), e.name]));
+  for (const t of state.templates) for (const e of t.exercises) names.set(normName(e.name), e.name);
+  for (const s of state.sessions) for (const e of s.exercises) names.set(normName(e.name), e.name);
+  return [...names.values()].sort((a, b) => a.localeCompare(b, "es"));
 }

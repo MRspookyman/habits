@@ -1,10 +1,62 @@
 import { h, fmt, num, toast, dec } from "../ui.js";
-import { state, dateKey, addDays, parseKey, habitsForDay, isChecked, toggleCheck, bodyEntry, setBody } from "../store.js";
-import { calorieAdvice, recoveryAlerts } from "../logic.js";
+import {
+  state, save, dateKey, addDays, parseKey, habitsForDay, isChecked, toggleCheck, bodyEntry, setBody,
+  proteinTotal, addProtein, undoProtein,
+} from "../store.js";
+import { calorieAdvice, recoveryAlerts, streak, dayCompletion, weekStart, weekSummary, isWorkSet } from "../logic.js";
+import { levelFromPct } from "../charts.js";
+import { weekSummaryBlock, rangeText, minutesText } from "./shared.js";
 import * as health from "../health.js";
 
-const longDate = (k) =>
-  parseKey(k).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+const longDate = (k) => parseKey(k).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+
+// Las 4 últimas semanas como calendario (L…D), con hoy remarcado.
+function miniMap(ctx, today, day) {
+  const start = addDays(weekStart(today), -21);
+  const cells = [];
+  for (let i = 0; i < 28; i++) {
+    const k = addDays(start, i);
+    if (k > today) {
+      cells.push(h("span", { class: "mm-cell future", "aria-hidden": "true" }));
+      continue;
+    }
+    const { pct } = dayCompletion(state.habits, state.checks, k);
+    const lvl = levelFromPct(pct);
+    const gym = state.sessions.some((s) => s.date === k && s.exercises.some((e) => e.sets.some(isWorkSet))) || (state.health[k]?.sports || []).length > 0;
+    cells.push(h("button", {
+      class: `mm-cell l${lvl ?? "x"}${k === today ? " today" : ""}${k === day && k !== today ? " sel" : ""}${gym ? " mark" : ""}`,
+      "aria-current": k === day ? "date" : null,
+      "aria-label": `${longDate(k)}: ${pct == null ? "sin hábitos" : `${Math.round(pct * 100)} %`}${gym ? ", con entreno" : ""}`,
+      onClick: () => ctx.go(k === today ? "#/hoy" : `#/hoy/${k}`),
+    }));
+  }
+  return h("div", { class: "minimap" },
+    h("div", { class: "mm-head", "aria-hidden": "true" }, ["L", "M", "X", "J", "V", "S", "D"].map((d) => h("span", {}, d))),
+    h("div", { class: "mm-grid" }, cells),
+  );
+}
+
+function proteinCard(ctx, day) {
+  const target = state.plan.protein;
+  const total = proteinTotal(day);
+  const pct = Math.min(1, total / target);
+  const add = (g) => () => { addProtein(day, g); ctx.rerender(); };
+  return h("section", { class: "card protein", "aria-label": "Proteína del día" },
+    h("div", { class: "protein-head" },
+      h("h2", {}, "Proteína"),
+      h("p", { class: "protein-num" }, h("strong", {}, String(total)), ` / ${target} g`),
+    ),
+    h("div", { class: "meter", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": target, "aria-valuenow": total, "aria-label": "Proteína" },
+      h("div", { class: "meter-fill" + (total >= target ? " full" : ""), style: { width: `${pct * 100}%` } })),
+    h("div", { class: "quick" },
+      h("button", { class: "btn", onClick: add(20) }, "+20"),
+      h("button", { class: "btn", onClick: add(30) }, "+30"),
+      h("button", { class: "btn", onClick: add(40) }, "+40"),
+      h("button", { class: "btn primary", onClick: add(40) }, "Batido"),
+      h("button", { class: "btn ghost", disabled: !total, "aria-label": "Deshacer la última toma", onClick: () => { undoProtein(day); ctx.rerender(); } }, "↶"),
+    ),
+  );
+}
 
 export function renderToday(ctx) {
   const today = dateKey();
@@ -23,19 +75,39 @@ export function renderToday(ctx) {
   );
 
   const pct = habits.length ? done / habits.length : 0;
+  const days = streak(state.habits, state.checks, today);
   const board = h("section", { class: "scoreboard", "aria-label": `${done} de ${habits.length} hábitos hechos` },
-    h("div", { class: "score" },
-      h("span", { class: "score-done" }, String(done)),
-      h("span", { class: "score-sep" }, "/"),
-      h("span", { class: "score-total" }, String(habits.length)),
+    h("div", { class: "board-top" },
+      h("div", { class: "score" },
+        h("span", { class: "score-done" }, String(done)),
+        h("span", { class: "score-sep" }, "/"),
+        h("span", { class: "score-total" }, String(habits.length)),
+      ),
+      h("div", { class: "streak" }, h("span", { class: "streak-num" }, String(days)), h("span", { class: "streak-label" }, days === 1 ? "día de racha" : "días de racha")),
     ),
     h("div", { class: "score-bar" }, h("div", { class: "score-fill", style: { width: `${pct * 100}%` } })),
     h("p", { class: "score-label" }, habits.length === 0 ? "Sin hábitos programados para este día" : done === habits.length ? "Día completo" : `Te quedan ${habits.length - done}`),
+    miniMap(ctx, today, day),
   );
+
+  // Resumen de la semana pasada, los lunes, hasta que se cierre.
+  let weekly = null;
+  const thisWeek = weekStart(today);
+  if (isToday && parseKey(today).getDay() === 1 && state.ui.weeklyDismissed !== thisWeek) {
+    const sum = weekSummary(state, addDays(thisWeek, -7));
+    weekly = h("section", { class: "card week-card" },
+      h("div", { class: "template-head" },
+        h("h2", {}, `Tu semana · ${rangeText(sum.from, sum.to)}`),
+        h("button", { class: "icon-btn", "aria-label": "Cerrar resumen", onClick: () => { state.ui.weeklyDismissed = thisWeek; save(); ctx.rerender(); } }, "✕"),
+      ),
+      weekSummaryBlock(sum),
+    );
+  }
 
   const list = h("ul", { class: "habit-list" },
     habits.map((x) => {
       const on = isChecked(day, x.id);
+      const auto = x.id === state.plan.proteinHabitId;
       return h("li", {},
         h("button", {
           class: "habit" + (on ? " on" : ""),
@@ -43,7 +115,7 @@ export function renderToday(ctx) {
           onClick: () => { toggleCheck(day, x.id); ctx.rerender(); },
         },
           h("span", { class: "check", "aria-hidden": "true" }, on ? "✓" : ""),
-          h("span", { class: "habit-text" }, h("span", { class: "habit-name" }, x.name), x.detail && h("span", { class: "habit-detail" }, x.detail)),
+          h("span", { class: "habit-text" }, h("span", { class: "habit-name" }, x.name), x.detail && h("span", { class: "habit-detail" }, auto ? `${x.detail} · se marca al llegar con el contador` : x.detail)),
         ),
       );
     }),
@@ -90,7 +162,7 @@ export function renderToday(ctx) {
   let healthCard = null;
   if (health.isConnected()) {
     const d = state.health[day] || {};
-    const sleep = d.sleepMin != null ? `${Math.floor(d.sleepMin / 60)} h ${String(d.sleepMin % 60).padStart(2, "0")}` : "—";
+    const sleep = d.sleepMin != null ? minutesText(d.sleepMin) : "—";
     healthCard = h("section", { class: "card" },
       h("h2", {}, "Fitbit"),
       h("dl", { class: "stats" },
@@ -99,16 +171,18 @@ export function renderToday(ctx) {
         h("div", {}, h("dt", {}, "Pasos"), h("dd", {}, d.steps != null ? d.steps.toLocaleString("es-ES") : "—")),
         h("div", {}, h("dt", {}, "Kcal gastadas"), h("dd", {}, d.kcal != null ? d.kcal.toLocaleString("es-ES") : "—")),
       ),
+      (d.sports || []).length > 0 && h("ul", { class: "sports" }, d.sports.map((x) => h("li", {},
+        h("span", {}, x.name), h("span", { class: "muted" }, `${minutesText(x.min)} · ${x.kcal.toLocaleString("es-ES")} kcal`)))),
       h("p", { class: "hint" }, "Las kcal y los pasos de la pulsera son orientativos: para ajustar calorías manda la báscula."),
     );
   }
 
   const sessions = state.sessions.filter((s) => s.date === day);
-  const sessionCard = sessions.length
-    ? h("section", { class: "card" }, h("h2", {}, "Entreno"),
-        sessions.map((s) => h("a", { class: "link-row", href: `#/entreno/${s.id}` }, s.name, h("span", { class: "muted" }, `${s.exercises.length} ejercicios`))))
-    : null;
+  const sessionCard = h("section", { class: "card" }, h("h2", {}, "Gimnasio"),
+    sessions.map((s) => h("a", { class: "link-row", href: `#/entreno/${s.id}` }, s.name, h("span", { class: "muted" }, s.finishedAt ? "Terminado" : "En curso"))),
+    isToday && !sessions.some((s) => !s.finishedAt) && h("a", { class: "btn ghost block", href: "#/rutina" }, sessions.length ? "Otro entreno" : "Empezar entreno"),
+  );
 
-  return h("frag", {}, nav, board, list, alerts.length > 0 && h("div", { class: "alerts" }, alerts), bodyForm, healthCard, sessionCard,
-    entry?.weight != null && h("p", { class: "hint center" }, `Registrado: ${fmt(entry.weight)} kg${entry.fat != null ? ` · ${fmt(entry.fat)} %` : ""}`));
+  return h("frag", {}, nav, board, weekly, list, proteinCard(ctx, day), alerts.length > 0 && h("div", { class: "alerts" }, alerts), bodyForm, healthCard,
+    (sessions.length > 0 || isToday) && sessionCard);
 }

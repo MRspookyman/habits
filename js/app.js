@@ -2,6 +2,7 @@ import { h, toast } from "./ui.js";
 import { onChange, state } from "./store.js";
 import * as health from "./health.js";
 import * as push from "./push.js";
+import * as timer from "./timer.js";
 import { renderToday } from "./views/today.js";
 import { renderRoutine, renderSession } from "./views/routine.js";
 import { renderProgress } from "./views/progress.js";
@@ -10,7 +11,7 @@ import { renderSettings } from "./views/settings.js";
 
 const TABS = [
   { path: "hoy", label: "Hoy", icon: "M4 12l5 5L20 6" },
-  { path: "rutina", label: "Rutina", icon: "M3 10v4M6 7v10M18 7v10M21 10v4M6 12h12" },
+  { path: "rutina", label: "Gimnasio", icon: "M3 10v4M6 7v10M18 7v10M21 10v4M6 12h12" },
   { path: "progreso", label: "Progreso", icon: "M3 17l6-6 4 4 8-8M15 7h6v6" },
   { path: "plan", label: "Plan", icon: "M6 3h9l4 4v14H6zM9 12h7M9 16h7M9 8h3" },
   { path: "ajustes", label: "Ajustes", icon: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4" },
@@ -38,6 +39,7 @@ let lastKey = "";
 function render(keepScroll = false) {
   const r = route();
   ctx.params = r.params;
+  if (r.view !== renderSession) timer.keepAwake(false);
   const y = scrollY;
   main.replaceChildren(r.view(ctx));
   const key = location.hash;
