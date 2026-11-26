@@ -2,7 +2,7 @@ import { h, fmt, num, toast, sheet, field, confirmSheet, dec } from "../ui.js";
 import { state, dateKey, addDays, setBody, exerciseInfo } from "../store.js";
 import {
   calorieAdvice, compliance, mean, dayCompletion, streak, trendSeries, weeklyRate, RATE_TARGET,
-  exerciseHistory, setsPerGroup, weeklyStats, weekStart, weekSummary, isWorkSet,
+  exerciseHistory, setsPerGroup, weeklyStats, weekStart, weekSummary, isWorkSet, firstUseDate,
 } from "../logic.js";
 import { lineChart, barChart, heatmap, levelFromPct } from "../charts.js";
 import { GROUPS } from "../exercises.js";
@@ -44,7 +44,8 @@ const isTrainingDay = (k) =>
 
 function heatmapCard(ctx, today) {
   const from = addDays(weekStart(today), -25 * 7);
-  const comp = compliance(state.habits, state.checks, from, today);
+  const first = firstUseDate(state.checks);
+  const comp = first ? compliance(state.habits, state.checks, first > from ? first : from, today) : null;
   return h("section", { class: "card heat-card" },
     h("div", { class: "template-head" },
       h("h2", {}, "26 semanas"),
@@ -54,7 +55,7 @@ function heatmapCard(ctx, today) {
       today,
       weeks: 26,
       label: "Cumplimiento de hábitos de las últimas 26 semanas. Toca un día para abrirlo.",
-      levelOf: (k) => levelFromPct(dayCompletion(state.habits, state.checks, k).pct),
+      levelOf: (k) => (!first || k < first ? null : levelFromPct(dayCompletion(state.habits, state.checks, k).pct)),
       markOf: isTrainingDay,
       onPick: (k) => ctx.go(k === today ? "#/hoy" : `#/hoy/${k}`),
     }),

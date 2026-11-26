@@ -230,6 +230,13 @@ export function dayCompletion(habits, checks, k) {
   return { scheduled: todays.length, done, pct: todays.length ? done / todays.length : null };
 }
 
+// Primer día con algún hábito marcado: antes de eso no hay datos (no cuenta como 0 %).
+export function firstUseDate(checks) {
+  let first = null;
+  for (const [k, v] of Object.entries(checks)) if (v?.length && (!first || k < first)) first = k;
+  return first;
+}
+
 export const STREAK_MIN = 0.8;
 
 // Días seguidos con ≥80 %. Se perdona 1 día fallido por semana (lunes a domingo);

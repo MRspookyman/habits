@@ -3,7 +3,7 @@ import {
   state, save, dateKey, addDays, parseKey, habitsForDay, isChecked, toggleCheck, bodyEntry, setBody,
   proteinTotal, addProtein, undoProtein,
 } from "../store.js";
-import { calorieAdvice, recoveryAlerts, streak, dayCompletion, weekStart, weekSummary, isWorkSet } from "../logic.js";
+import { calorieAdvice, recoveryAlerts, streak, dayCompletion, weekStart, weekSummary, isWorkSet, firstUseDate } from "../logic.js";
 import { levelFromPct } from "../charts.js";
 import { weekSummaryBlock, rangeText, minutesText } from "./shared.js";
 import * as health from "../health.js";
@@ -13,6 +13,7 @@ const longDate = (k) => parseKey(k).toLocaleDateString("es-ES", { weekday: "long
 // Las 4 últimas semanas como calendario (L…D), con hoy remarcado.
 function miniMap(ctx, today, day) {
   const start = addDays(weekStart(today), -21);
+  const first = firstUseDate(state.checks);
   const cells = [];
   for (let i = 0; i < 28; i++) {
     const k = addDays(start, i);
@@ -21,7 +22,7 @@ function miniMap(ctx, today, day) {
       continue;
     }
     const { pct } = dayCompletion(state.habits, state.checks, k);
-    const lvl = levelFromPct(pct);
+    const lvl = first && k >= first ? levelFromPct(pct) : null;
     const gym = state.sessions.some((s) => s.date === k && s.exercises.some((e) => e.sets.some(isWorkSet))) || (state.health[k]?.sports || []).length > 0;
     cells.push(h("button", {
       class: `mm-cell l${lvl ?? "x"}${k === today ? " today" : ""}${k === day && k !== today ? " sel" : ""}${gym ? " mark" : ""}`,
