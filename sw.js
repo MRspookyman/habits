@@ -1,5 +1,5 @@
 // Service worker: funciona sin conexión y muestra las notificaciones push.
-const VERSION = "habits-v3";
+const VERSION = "habits-v4";
 const SHELL = [
   "./",
   "index.html",
@@ -32,8 +32,13 @@ const SHELL = [
   "icons/badge-96.png",
 ];
 
+// Se descarga saltando la caché HTTP para no mezclar archivos de versiones distintas.
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(VERSION)
+      .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener("activate", (e) => {
@@ -44,12 +49,13 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Archivos de la app: primero red (para recibir actualizaciones), si no hay red, la copia guardada.
+// Archivos de la app: primero red, revalidando siempre con el servidor (cache: "no-cache"),
+// para que todos los módulos sean de la misma versión; sin red, la copia guardada.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request.mode === "navigate" ? e.request.url : e.request, { cache: "no-cache" })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
