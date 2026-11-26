@@ -381,7 +381,10 @@ export function weekSummary(state, from) {
     sportMin: w.sportMin,
     avgWeight: mean(inWeek.map((p) => p.raw)),
     rate: weeklyRate(trend.filter((p) => p.date <= to)),
-    compliance: compliance(state.habits, state.checks, from, to),
+    compliance: (() => {
+      const first = firstUseDate(state.checks);
+      return first && first <= to ? compliance(state.habits, state.checks, first > from ? first : from, to) : null;
+    })(),
     prs,
   };
 }
